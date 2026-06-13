@@ -18,7 +18,7 @@ android {
         //    CameraState.errorMessage, shown as a red error banner with Retry.
         //  • Permanently-denied camera permission now shows a Settings guidance
         //    message instead of looping the request prompt.
-        versionName = "0.1.4"
+        versionName = "0.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

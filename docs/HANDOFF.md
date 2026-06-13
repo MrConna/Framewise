@@ -29,7 +29,16 @@ adb logcat -s Framewise CompPipeline CameraX CameraController
 - **FrameAnalyzer is the weakest link**: real device YUV→Bitmap conversion is fragile. Consider replacing with CameraX `imageAnalysis.setAnalyzer` using `ImageProxy.toBitmap()` if available
 - **CameraCompositionPipeline** is the central data flow: FrameAnalyzer → Pipeline → Engine → UI
 
-### 5. Quick Testing on Emulator
+### 5. Version Rule
+**app/build.gradle.kts 的 versionName 必须与 git tag 一致**
+
+每次发布前:
+1. 更新 versionName 为新的 tag 号
+2. 执行 assembleDebug 确认构建通过
+3. git tag + gh release
+4. 更新 docs/CHANGELOG.md
+
+## 6. Quick Testing on Emulator
 The camera doesn't work well on Android emulator. For UI testing:
 - Create a `DemoPipeline` that produces mock PhotoAnalysis at 1fps with fake subjects/horizon
 - Replace `CameraCompositionPipeline` with `DemoPipeline` via a flag

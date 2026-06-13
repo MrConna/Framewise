@@ -3,6 +3,12 @@
 ## 项目概览
 实时拍照构图指导 Android App。CameraX + ML Kit + Jetpack Compose。
 
+## 开发守则
+1. **每次发布前先读 docs/HANDOFF.md** — 了解当前痛点和优先级
+2. **版本号必须一致** — app/build.gradle.kts 的 versionName 必须等于 git tag（当前 v0.1.6）
+3. **每次修改后更新 docs/CHANGELOG.md** — 记录变更、修复的 bug、新增功能
+4. **功能完整后再打 tag** — 先 assembleDebug 确保构建通过，再 git tag + gh release
+
 ## 快速上手
 ```bash
 export JAVA_HOME=/usr/local/opt/openjdk@17
@@ -46,5 +52,10 @@ CameraX → FrameAnalyzer → CameraCompositionPipeline → PhotoCompositionEngi
 - `SettingsState.kt` — SharedPreferences 持久化
 
 ### 版本历史
-最新 tag: v0.1.6
+最新 tag: v0.1.6（versionName 必须同步）
 详见 docs/CHANGELOG.md
+
+### 必读文档
+- docs/CHANGELOG.md — 版本变更记录
+- docs/HANDOFF.md — 待修问题 + 接手指引
+- docs/ARCHITECTURE.md — 项目架构 + 文件树
