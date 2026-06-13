@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Window/XML theme for the activity. This styles the system window (status bar,
+      navigation bar, splash background) before Compose draws; the in-app Material3
+      color scheme lives in ui/theme. Material3 + dark, matching the camera app.
+    -->
+    <style name="Theme.Framewise" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">@color/framewise_background</item>
+        <item name="android:statusBarColor">@color/framewise_background</item>
+        <item name="android:navigationBarColor">@color/framewise_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

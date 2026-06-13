@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Framewise</string>
+    <string name="camera_permission_title">Framewise needs camera access</string>
+    <string name="camera_permission_rationale">We analyze the live viewfinder on-device to guide your composition. The image never leaves your phone.</string>
+    <string name="camera_permission_grant">Grant camera access</string>
+</resources>

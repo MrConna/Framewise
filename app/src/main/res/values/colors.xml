@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App background (design doc #0d1117) — used by the window theme and splash. -->
+    <color name="framewise_background">#FF0D1117</color>
+    <color name="framewise_surface">#FF161B22</color>
+    <color name="ic_launcher_background">#FF0D1117</color>
+</resources>
