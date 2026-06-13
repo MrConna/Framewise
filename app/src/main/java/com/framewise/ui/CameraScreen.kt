@@ -349,6 +349,32 @@ fun CameraScreen(
                 }
             }
         }
+
+        // Fix 3: recoverable camera-binding error banner (drawn last so it sits
+        // on top, aligned to the top of the screen).
+        cameraState.errorMessage?.let { error ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding(),
+                color = Color(0xFFD32F2F)
+            ) {
+                Row(
+                    modifier = Modifier.padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Camera error: $error",
+                        color = White,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { cameraController.bindToLifecycle() }) {
+                        Text("Retry", color = White)
+                    }
+                }
+            }
+        }
     }
 }
 

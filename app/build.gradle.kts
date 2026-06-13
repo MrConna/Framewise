@@ -13,7 +13,12 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        // Release notes — 0.1.2 (diagnostics):
+        //  • CameraX binding failures are now caught and surfaced to the UI via
+        //    CameraState.errorMessage, shown as a red error banner with Retry.
+        //  • Permanently-denied camera permission now shows a Settings guidance
+        //    message instead of looping the request prompt.
+        versionName = "0.1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

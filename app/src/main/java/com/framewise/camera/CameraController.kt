@@ -36,6 +36,8 @@ data class CameraState(
     val rotationDegrees: Int = 0,
     val isFrontCamera: Boolean = false,
     val error: String? = null,
+    /** Set when CameraX binding fails, so the UI can show a recoverable banner. */
+    val errorMessage: String? = null,
 )
 
 /**
@@ -258,7 +260,11 @@ class CameraController(
             Log.d(TAG, "Camera bound, rotation=$rotation, facing=${if (isFront) "front" else "back"}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to bind camera", e)
-            _state.value = _state.value.copy(isReady = false, error = e.message)
+            _state.value = _state.value.copy(
+                isReady = false,
+                error = e.message,
+                errorMessage = e.message ?: "Unknown camera error",
+            )
         }
     }
 
