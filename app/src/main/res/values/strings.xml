@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Framewise</string>
-    <string name="camera_permission_title">Framewise needs camera access</string>
-    <string name="camera_permission_rationale">We analyze the live viewfinder on-device to guide your composition. The image never leaves your phone.</string>
-    <string name="camera_permission_grant">Grant camera access</string>
+    <string name="app_name">构图指南</string>
+    <string name="camera_permission_title">构图指南需要相机权限</string>
+    <string name="camera_permission_rationale">我们在设备本地实时分析取景画面来指导构图。画面不会离开你的手机。</string>
+    <string name="camera_permission_grant">允许相机权限</string>
+
+    <string name="settings_title">设置</string>
+    <string name="gallery_title">相册</string>
+    <string name="photo_saved">照片已保存 ✓</string>
+    <string name="camera_not_ready">相机未就绪</string>
+    <string name="point_hint">对准一个场景获取构图建议</string>
+    <string name="shutter_hint">点击拍摄</string>
+    <string name="score">评分</string>
+    <string name="no_photos">还没有拍过照片</string>
+    <string name="retry">重试</string>
+    <string name="save_location">保存位置: Pictures/构图指南</string>
 </resources>

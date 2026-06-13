@@ -1,15 +1,24 @@
 package com.framewise.ui
 
+import android.net.Uri
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cached
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -18,15 +27,22 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import coil.compose.rememberAsyncImagePainter
+import com.framewise.R
 import com.framewise.SettingsState
 import com.framewise.camera.CameraCompositionPipeline
 import com.framewise.camera.CameraController
@@ -49,6 +65,14 @@ fun CameraScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val composableScope = rememberCoroutineScope()
+
+    // Localized strings (resolved in composition; reused inside callbacks).
+    val pointHint = stringResource(R.string.point_hint)
+    val photoSavedMsg = stringResource(R.string.photo_saved)
+    val cameraNotReadyMsg = stringResource(R.string.camera_not_ready)
+    val retryLabel = stringResource(R.string.retry)
+    val shutterHint = stringResource(R.string.shutter_hint)
+    val scoreLabel = stringResource(R.string.score)
 
     // Real composition pipeline: FrameAnalyzer → PhotoCompositionEngine (13 rules) → result.
     // Scope is passed for demo-mode timeout fallback.
@@ -84,15 +108,15 @@ fun CameraScreen(
 
     val cameraState by cameraController.state.collectAsState()
 
-    // Fix 1: shutter flash. A white overlay fades in then out over ~200ms when a
-    // photo is captured.
+    // Shutter flash: white overlay fades in then out over ~200ms on capture.
     val coroutineScope = rememberCoroutineScope()
     val flashAlpha = remember { Animatable(0f) }
 
+    // Most recent captured photo — shown as a thumbnail in the bottom-left corner.
+    var lastPhotoUri by remember { mutableStateOf<Uri?>(null) }
+
     // Lifecycle management runs ONCE per composition entry. We must NOT release
     // the analyzer on dispose — CameraX unbinds via the lifecycle automatically.
-    // We only remove the observer so returning from Settings doesn't stack
-    // duplicate camera bindings (the black-screen bug).
     DisposableEffect(Unit) {
         cameraController.bindToLifecycle()
         onDispose {
@@ -100,24 +124,22 @@ fun CameraScreen(
         }
     }
 
-    // Bug 3: camera-level status. If no PhotoAnalysis has arrived yet, surface a
-    // progressive message: "Camera starting…" after 500ms, then "Camera may need
-    // restart" after 3s. Keyed on whether analysis exists so it resets once
-    // frames flow.
+    // Camera-level status. If no PhotoAnalysis has arrived yet, surface a
+    // progressive message after 500ms, then after 3s.
     var cameraStatus by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(photoAnalysis != null) {
         if (photoAnalysis == null) {
             cameraStatus = null
             delay(500)
-            if (photoAnalysis == null) cameraStatus = "Camera starting…"
-            delay(2500) // 500ms + 2500ms = 3s total
-            if (photoAnalysis == null) cameraStatus = "Camera may need restart"
+            if (photoAnalysis == null) cameraStatus = "相机启动中…"
+            delay(2500)
+            if (photoAnalysis == null) cameraStatus = "相机可能需要重启"
         } else {
             cameraStatus = null
         }
     }
 
-    // Scene-level fallback: frames are flowing but nothing was detected for >2s.
+    // Scene-level fallback: frames flowing but nothing detected for >2s.
     val sceneEmpty = photoAnalysis.let { a ->
         a != null && a.subjects.isEmpty() && !a.horizon.detected && a.lines.isEmpty()
     }
@@ -131,51 +153,55 @@ fun CameraScreen(
         }
     }
 
-    // Camera status (no frames) takes priority over the scene hint.
-    val overlayMessage = cameraStatus
-        ?: if (showEmptyHint) "Point at a scene to get composition tips" else null
+    val overlayMessage = cameraStatus ?: if (showEmptyHint) pointHint else null
+
+    // Score-derived accent color shared by the gauge and the suggestion chips.
+    val scoreColor = compositionResult?.let { result ->
+        when {
+            result.overallScore >= 85 -> ScorePerfect
+            result.overallScore >= 70 -> ScoreGood
+            else -> ScoreBad
+        }
+    } ?: AccentBlue
 
     Box(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
-        // 1. Full screen camera preview
+        // 1. Full screen camera preview.
         AndroidView(
             factory = { previewView },
             modifier = Modifier.fillMaxSize()
         )
 
-        // 2. Compose Canvas overlay
+        // 2. Compose Canvas overlay (grid + horizon + subject boxes).
         Canvas(modifier = Modifier.fillMaxSize()) {
             val width = size.width
             val height = size.height
 
-            // A. Rule of Thirds
-            // Draw 2 vertical lines
-            drawLine(
-                color = TransparentGrid,
-                start = Offset(width / 3f, 0f),
-                end = Offset(width / 3f, height),
-                strokeWidth = 1.5.dp.toPx()
+            // A. Rule-of-thirds grid with a soft glow (wide low-alpha pass first).
+            val lines = listOf(
+                Offset(width / 3f, 0f) to Offset(width / 3f, height),
+                Offset(width * 2f / 3f, 0f) to Offset(width * 2f / 3f, height),
+                Offset(0f, height / 3f) to Offset(width, height / 3f),
+                Offset(0f, height * 2f / 3f) to Offset(width, height * 2f / 3f),
             )
-            drawLine(
-                color = TransparentGrid,
-                start = Offset(width * 2f / 3f, 0f),
-                end = Offset(width * 2f / 3f, height),
-                strokeWidth = 1.5.dp.toPx()
-            )
-            // Draw 2 horizontal lines
-            drawLine(
-                color = TransparentGrid,
-                start = Offset(0f, height / 3f),
-                end = Offset(width, height / 3f),
-                strokeWidth = 1.5.dp.toPx()
-            )
-            drawLine(
-                color = TransparentGrid,
-                start = Offset(0f, height * 2f / 3f),
-                end = Offset(width, height * 2f / 3f),
-                strokeWidth = 1.5.dp.toPx()
-            )
+            lines.forEach { (start, end) ->
+                // Glow pass.
+                drawLine(
+                    color = AccentBlue.copy(alpha = 0.18f),
+                    start = start,
+                    end = end,
+                    strokeWidth = 6.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                // Crisp line.
+                drawLine(
+                    color = TransparentGrid,
+                    start = start,
+                    end = end,
+                    strokeWidth = 1.5.dp.toPx()
+                )
+            }
 
-            // B. Horizon Level Indicator
+            // B. Horizon level indicator.
             photoAnalysis?.horizon?.let { horizon ->
                 if (horizon.detected) {
                     val angle = horizon.angle.toFloat()
@@ -193,24 +219,19 @@ fun CameraScreen(
                 }
             }
 
-            // C. Subject Framing Boxes
+            // C. Subject framing boxes.
             photoAnalysis?.subjects?.forEach { subject ->
                 val box = subject.bounds
-                val boxX = (box.x * width).toFloat()
-                val boxY = (box.y * height).toFloat()
-                val boxW = (box.width * width).toFloat()
-                val boxH = (box.height * height).toFloat()
-
                 drawRect(
                     color = AccentBlue.copy(alpha = 0.5f),
-                    topLeft = Offset(boxX, boxY),
-                    size = Size(boxW, boxH),
+                    topLeft = Offset((box.x * width).toFloat(), (box.y * height).toFloat()),
+                    size = Size((box.width * width).toFloat(), (box.height * height).toFloat()),
                     style = Stroke(width = 2.dp.toPx())
                 )
             }
         }
 
-        // C2. Status / empty-scene fallback message (Bugs 2 & 3)
+        // C2. Status / empty-scene fallback message.
         overlayMessage?.let { message ->
             Surface(
                 shape = MaterialTheme.shapes.large,
@@ -229,7 +250,7 @@ fun CameraScreen(
             }
         }
 
-        // D. Top Left Settings Icon
+        // D. Top-left settings icon.
         IconButton(
             onClick = onNavigateToSettings,
             modifier = Modifier
@@ -240,152 +261,168 @@ fun CameraScreen(
         ) {
             Icon(
                 imageVector = Icons.Default.Settings,
-                contentDescription = "Settings",
+                contentDescription = "设置",
                 tint = White
             )
         }
 
-        // E. Top Right Score Gauge & Camera Toggle
-        Row(
+        // D2. Top-right camera toggle.
+        IconButton(
+            onClick = { cameraController.flipCamera() },
             modifier = Modifier
                 .statusBarsPadding()
                 .align(Alignment.TopEnd)
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(16.dp)
+                .background(SurfaceDark.copy(alpha = 0.7f), CircleShape)
         ) {
-            // Camera toggle
-            IconButton(
-                onClick = { cameraController.flipCamera() },
-                modifier = Modifier
-                    .background(SurfaceDark.copy(alpha = 0.7f), CircleShape)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Cached,
-                    contentDescription = "Flip Camera",
-                    tint = White
-                )
-            }
-
-            // Circular composition score gauge
-            compositionResult?.let { result ->
-                val scoreColor = when {
-                    result.overallScore >= 85 -> ScorePerfect
-                    result.overallScore >= 70 -> ScoreGood
-                    else -> ScoreBad
-                }
-                Box(
-                    modifier = Modifier
-                        .size(54.dp)
-                        .background(SurfaceDark.copy(alpha = 0.8f), CircleShape)
-                        .border(3.dp, scoreColor, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = result.overallScore.toInt().toString(),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = White
-                    )
-                }
-            }
+            Icon(
+                imageVector = Icons.Default.Cached,
+                contentDescription = "切换镜头",
+                tint = White
+            )
         }
 
-        // F. Bottom suggestions and controls panel
-        Column(
-            modifier = Modifier
-                .navigationBarsPadding()
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Suggestions chips
-            compositionResult?.let { result ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
-                ) {
-                    result.bestSuggestions.forEach { suggestion ->
-                        SuggestionChip(suggestion = suggestion)
-                    }
-                }
-            }
-
-            // Fix 3: fallback demo suggestions when no analysis is available yet.
-            if (compositionResult == null || compositionResult?.bestSuggestions?.isEmpty() == true) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
-                ) {
-                    SuggestionChip(suggestion = Suggestion(SuggestionType.INFO, "Point camera at a scene"))
-                    SuggestionChip(suggestion = Suggestion(SuggestionType.MOVE_CAMERA, "Look for leading lines"))
-                    SuggestionChip(suggestion = Suggestion(SuggestionType.CHANGE_ANGLE, "Try different angle"))
-                }
-            }
-
-            // Bottom control bar (Gallery icon, Shutter button)
+        // E. Redesign #1 — semicircular speedometer-style score gauge, top-center.
+        compositionResult?.let { result ->
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 32.dp),
-                contentAlignment = Alignment.Center
+                    .statusBarsPadding()
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
             ) {
-                // Gallery button on the left
-                IconButton(
-                    onClick = onNavigateToGallery,
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .size(54.dp)
-                        .background(SurfaceDark.copy(alpha = 0.7f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoLibrary,
-                        contentDescription = "Gallery",
-                        tint = White
-                    )
-                }
-
-                // Shutter FAB in the center
-                LargeFloatingActionButton(
-                    onClick = {
-                        if (cameraState.isReady) {
-                            cameraController.takePhoto { uri ->
-                                val msg = if (uri != null) "Photo saved ✓" else "Failed to save photo"
-                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                if (uri != null) SettingsState.capturedCount++
-                            }
-                            // Shutter flash: fade in then out over 200ms.
-                            coroutineScope.launch {
-                                flashAlpha.animateTo(1f, tween(100))
-                                flashAlpha.animateTo(0f, tween(100))
-                            }
-                        } else {
-                            // Camera not initialized yet — nudge a rebind and tell the user.
-                            Toast.makeText(context, "Camera not ready", Toast.LENGTH_SHORT).show()
-                            cameraController.requestBinding()
-                        }
-                    },
-                    modifier = Modifier.size(76.dp),
-                    shape = CircleShape,
-                    containerColor = White,
-                    contentColor = SurfaceDark
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(60.dp)
-                            .border(3.dp, SurfaceDark, CircleShape)
-                            .background(Color.Transparent, CircleShape)
-                    )
-                }
+                ScoreArcGauge(
+                    score = result.overallScore.toInt(),
+                    color = scoreColor,
+                    label = scoreLabel
+                )
             }
         }
 
-        // Fix 1: shutter flash overlay (drawn above the controls).
+        // F. Bottom panel — frosted glass card with suggestions + controls.
+        Surface(
+            color = SurfaceDark.copy(alpha = 0.55f),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .border(
+                    width = 1.dp,
+                    color = White.copy(alpha = 0.08f),
+                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .fillMaxWidth()
+                    .padding(top = 16.dp, bottom = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Suggestion chips (real or demo fallback), bordered by score color.
+                val suggestions = compositionResult?.bestSuggestions?.takeIf { it.isNotEmpty() }
+                    ?: listOf(
+                        Suggestion(SuggestionType.INFO, "试试三分法"),
+                        Suggestion(SuggestionType.MOVE_CAMERA, "寻找引导线"),
+                        Suggestion(SuggestionType.CHANGE_ANGLE, "换个角度"),
+                    )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                ) {
+                    suggestions.forEach { suggestion ->
+                        SuggestionChip(suggestion = suggestion, borderColor = scoreColor)
+                    }
+                }
+
+                // Control bar: recent-photo thumbnail / gallery + shutter.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Bottom-left: recent photo thumbnail (after first capture) or gallery icon.
+                    val thumb = lastPhotoUri
+                    if (thumb != null) {
+                        Image(
+                            painter = rememberAsyncImagePainter(thumb),
+                            contentDescription = "相册",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .size(54.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(2.dp, White.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                                .clickable { onNavigateToGallery() }
+                        )
+                    } else {
+                        IconButton(
+                            onClick = onNavigateToGallery,
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .size(54.dp)
+                                .background(SurfaceDark.copy(alpha = 0.7f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "相册",
+                                tint = White
+                            )
+                        }
+                    }
+
+                    // Center: shutter with a pulsing focus ring while initializing.
+                    Box(contentAlignment = Alignment.Center) {
+                        if (!cameraState.isReady) {
+                            PulsingFocusRing()
+                        }
+                        LargeFloatingActionButton(
+                            onClick = {
+                                if (cameraState.isReady) {
+                                    cameraController.takePhoto { uri ->
+                                        val msg = if (uri != null) photoSavedMsg else "保存照片失败"
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        if (uri != null) {
+                                            SettingsState.capturedCount++
+                                            lastPhotoUri = uri
+                                        }
+                                    }
+                                    coroutineScope.launch {
+                                        flashAlpha.animateTo(1f, tween(100))
+                                        flashAlpha.animateTo(0f, tween(100))
+                                    }
+                                } else {
+                                    Toast.makeText(context, cameraNotReadyMsg, Toast.LENGTH_SHORT).show()
+                                    cameraController.requestBinding()
+                                }
+                            },
+                            modifier = Modifier.size(76.dp),
+                            shape = CircleShape,
+                            containerColor = White,
+                            contentColor = SurfaceDark
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(60.dp)
+                                    .border(3.dp, SurfaceDark, CircleShape)
+                                    .background(Color.Transparent, CircleShape)
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = shutterHint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = White.copy(alpha = 0.6f)
+                )
+            }
+        }
+
+        // Shutter flash overlay (above the controls).
         if (flashAlpha.value > 0f) {
             Box(
                 modifier = Modifier
@@ -394,8 +431,7 @@ fun CameraScreen(
             )
         }
 
-        // Fix 3: recoverable camera-binding error banner (drawn last so it sits
-        // on top, aligned to the top of the screen).
+        // Recoverable camera-binding error banner (drawn last, top of screen).
         cameraState.errorMessage?.let { error ->
             Surface(
                 modifier = Modifier
@@ -409,12 +445,12 @@ fun CameraScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "Camera error: $error",
+                        "相机错误：$error",
                         color = White,
                         modifier = Modifier.weight(1f)
                     )
                     TextButton(onClick = { cameraController.bindToLifecycle() }) {
-                        Text("Retry", color = White)
+                        Text(retryLabel, color = White)
                     }
                 }
             }
@@ -422,20 +458,117 @@ fun CameraScreen(
     }
 }
 
+/** Redesign #1 — semicircular score gauge that fills like a speedometer. */
 @Composable
-fun SuggestionChip(suggestion: com.framewise.engine.types.Suggestion) {
-    Surface(
-        shape = CircleShape,
-        color = SurfaceDark.copy(alpha = 0.85f),
-        contentColor = White,
-        modifier = Modifier.padding(2.dp)
+private fun ScoreArcGauge(score: Int, color: Color, label: String) {
+    val clamped = score.coerceIn(0, 100)
+    Box(
+        modifier = Modifier.size(width = 130.dp, height = 78.dp),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val stroke = 9.dp.toPx()
+            val d = size.width - stroke
+            val topLeft = Offset(stroke / 2f, size.height - stroke / 2f - d / 2f)
+            val arcSize = Size(d, d)
+            // Background track (top semicircle).
+            drawArc(
+                color = Color(0x33FFFFFF),
+                startAngle = 180f,
+                sweepAngle = -180f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            // Progress.
+            drawArc(
+                color = color,
+                startAngle = 180f,
+                sweepAngle = -(180f * clamped / 100f),
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+        }
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(bottom = 2.dp)
+        ) {
+            Text(
+                text = clamped.toString(),
+                style = MaterialTheme.typography.titleLarge,
+                color = White
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = White.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
+/** Redesign #6 — pulsing ring shown around the shutter while the camera initializes. */
+@Composable
+private fun PulsingFocusRing() {
+    val transition = rememberInfiniteTransition(label = "focus")
+    val scale by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.35f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
+        label = "scale"
+    )
+    val alpha by transition.animateFloat(
+        initialValue = 0.6f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
+        label = "alpha"
+    )
+    Box(
+        modifier = Modifier
+            .size((90 * scale).dp)
+            .border(2.dp, White.copy(alpha = alpha), CircleShape)
+    )
+}
+
+@Composable
+fun SuggestionChip(
+    suggestion: com.framewise.engine.types.Suggestion,
+    borderColor: Color = AccentBlue,
+) {
+    // Redesign #7 — subtle animated gradient sweeping across the chip background.
+    val transition = rememberInfiniteTransition(label = "chip")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(3000, easing = LinearEasing), RepeatMode.Reverse),
+        label = "phase"
+    )
+    val brush = Brush.horizontalGradient(
+        colors = listOf(
+            SurfaceDark.copy(alpha = 0.85f),
+            borderColor.copy(alpha = 0.28f),
+            SurfaceDark.copy(alpha = 0.85f),
+        ),
+        startX = -300f + phase * 600f,
+        endX = 300f + phase * 600f
+    )
+
+    // Redesign #4 — colored border matching the current score.
+    Box(
+        modifier = Modifier
+            .padding(2.dp)
+            .clip(CircleShape)
+            .background(brush)
+            .border(1.dp, borderColor.copy(alpha = 0.8f), CircleShape)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Icon representing SuggestionType
             val iconText = when (suggestion.type) {
                 SuggestionType.ROTATE -> "🔄"
                 SuggestionType.MOVE_CAMERA -> "📱"
@@ -448,7 +581,8 @@ fun SuggestionChip(suggestion: com.framewise.engine.types.Suggestion) {
             Text(text = iconText)
             Text(
                 text = suggestion.text,
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
+                color = White
             )
         }
     }

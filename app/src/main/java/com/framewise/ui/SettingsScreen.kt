@@ -6,8 +6,10 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import com.framewise.R
 import com.framewise.SettingsState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -21,12 +23,12 @@ fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text(stringResource(R.string.settings_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = "返回"
                         )
                     }
                 },
@@ -47,35 +49,35 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Composition Rules",
+                text = "构图规则",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
 
             SettingRow(
-                title = "Rule of Thirds",
-                description = "Show grid lines dividing the frame into nine equal parts",
+                title = "三分法",
+                description = "显示九宫格辅助线",
                 checked = SettingsState.ruleOfThirdsEnabled,
                 onCheckedChange = { SettingsState.ruleOfThirdsEnabled = it }
             )
 
             SettingRow(
-                title = "Horizon Level",
-                description = "Show indicator to prevent image skewing",
+                title = "水平校准",
+                description = "防止画面倾斜",
                 checked = SettingsState.horizonLevelEnabled,
                 onCheckedChange = { SettingsState.horizonLevelEnabled = it }
             )
 
             SettingRow(
-                title = "Golden Ratio",
-                description = "Show golden ratio grid overlays",
+                title = "黄金比例",
+                description = "显示黄金螺旋辅助线",
                 checked = SettingsState.goldenRatioEnabled,
                 onCheckedChange = { SettingsState.goldenRatioEnabled = it }
             )
 
             SettingRow(
-                title = "Diagonal Lines",
-                description = "Show dynamic diagonal guidelines",
+                title = "对角线",
+                description = "显示对角线构图指引",
                 checked = SettingsState.diagonalEnabled,
                 onCheckedChange = { SettingsState.diagonalEnabled = it }
             )
@@ -83,14 +85,14 @@ fun SettingsScreen(
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
 
             Text(
-                text = "System Settings",
+                text = "系统设置",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
 
             SettingRow(
-                title = "Keep Screen On",
-                description = "Prevent device screen from turning off while using camera",
+                title = "保持屏幕常亮",
+                description = "取景时保持屏幕不灭",
                 checked = SettingsState.keepScreenOn,
                 onCheckedChange = { SettingsState.keepScreenOn = it }
             )
@@ -98,18 +100,18 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Save Location",
+                text = "保存位置",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
-            
+
             Text(
-                text = "Pictures/Framewise",
+                text = "Pictures/构图指南",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground
             )
             Text(
-                text = "Captured photos are saved to your external storage directory.",
+                text = "照片保存到设备外部存储",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
             )
