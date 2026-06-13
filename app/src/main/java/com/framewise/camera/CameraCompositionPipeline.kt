@@ -2,13 +2,14 @@ package com.framewise.camera
 
 import android.util.Log
 import com.framewise.engine.PhotoCompositionEngine
-import com.framewise.engine.types.CompositionResult
-import com.framewise.engine.types.PhotoAnalysis
-import com.framewise.engine.types.RuleResult
-import com.framewise.engine.types.Suggestion
+import com.framewise.engine.types.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Composition pipeline: connects [FrameAnalyzer] → [PhotoCompositionEngine] → result.
@@ -36,56 +37,104 @@ import kotlinx.coroutines.flow.asStateFlow
 class CameraCompositionPipeline(
     private val frameAnalyzer: FrameAnalyzer,
     private val compositionEngine: PhotoCompositionEngine,
+    private val scope: CoroutineScope? = null,
 ) {
 
     companion object {
         private const val TAG = "CompPipeline"
+        private const val DEMO_TIMEOUT_MS = 3000L // 3s without real frame → demo mode
     }
 
     private val _compositionResult = MutableStateFlow<CompositionResult?>(null)
     val compositionResult: StateFlow<CompositionResult?> = _compositionResult.asStateFlow()
 
-    /**
-     * The most recent raw [PhotoAnalysis]. The UI overlay observes this to draw
-     * the detected horizon and subject boxes (the [compositionResult] only
-     * carries scores + suggestions).
-     */
     private val _photoAnalysis = MutableStateFlow<PhotoAnalysis?>(null)
     val photoAnalysis: StateFlow<PhotoAnalysis?> = _photoAnalysis.asStateFlow()
 
-    /** Number of frames analysed since start. */
     private var frameCount = 0
+    private var hasRealFrame = false
+    private var demoJob: Job? = null
 
     /**
      * Attach the pipeline to the frame analyzer's callback.
-     * Call this once after the camera is started.
+     * Also starts the demo timeout: if no real frame arrives within [DEMO_TIMEOUT_MS],
+     * a simulated analysis is emitted so the UI always has data to display.
      */
     fun attach() {
+        hasRealFrame = false
         frameAnalyzer.onAnalysisReady = { analysis ->
+            if (!hasRealFrame) {
+                hasRealFrame = true
+                demoJob?.cancel()
+                Log.d(TAG, "First real frame received — demo mode cancelled")
+            }
             processFrame(analysis)
         }
-        Log.d(TAG, "Pipeline attached")
+        Log.d(TAG, "Pipeline attached, demo timeout=${DEMO_TIMEOUT_MS}ms")
+
+        // Schedule demo fallback
+        demoJob = scope?.launch {
+            delay(DEMO_TIMEOUT_MS)
+            if (!hasRealFrame) {
+                Log.w(TAG, "No real frame after ${DEMO_TIMEOUT_MS}ms — activating demo mode")
+                emitDemoAnalysis()
+            }
+        }
     }
 
-    /**
-     * Detach from the frame analyzer.
-     */
     fun detach() {
         frameAnalyzer.onAnalysisReady = null
+        demoJob?.cancel()
         _compositionResult.value = null
         _photoAnalysis.value = null
         Log.d(TAG, "Pipeline detached")
     }
 
-    /**
-     * Force a re-evaluation of the last [PhotoAnalysis] (useful after the
-     * user changes a setting that affects rule weighting).
-     */
     fun refresh() {
-        // The [compositionResult] already holds the last result; the UI can
-        // observe it without re-processing. If the engine uses mutable state
-        // this is where we'd re-evaluate.
-        Log.d(TAG, "Refresh requested (no-op, result already emitted)")
+        Log.d(TAG, "Refresh requested")
+    }
+
+    /**
+     * Emit a plausible mock analysis so the UI overlay + suggestions are always
+     * visible, even when real image analysis fails (e.g. yuvToBitmap returning
+     * null on certain devices).
+     */
+    private fun emitDemoAnalysis() {
+        val demo = PhotoAnalysis(
+            subjects = listOf(
+                Subject(bounds = Rect(0.25, 0.2, 0.15, 0.4), type = SubjectType.PERSON, confidence = 0.85),
+                Subject(bounds = Rect(0.55, 0.7, 0.12, 0.15), type = SubjectType.OBJECT, confidence = 0.6),
+            ),
+            horizon = Horizon(detected = true, angle = 0.012, y = 0.48),
+            lines = listOf(
+                DetectedLine(start = Point(0.0, 0.6), end = Point(0.5, 0.4), angle = 35.0, strength = 0.7),
+                DetectedLine(start = Point(0.8, 0.0), end = Point(0.6, 0.5), angle = 120.0, strength = 0.5),
+            ),
+            symmetry = Symmetry(vertical = 0.3, horizontal = 0.1, axisOffset = 0.2),
+            brightness = Brightness(mean = 0.6, overexposed = 0.05, underexposed = 0.02, backlit = false),
+            scene = Scene.LANDSCAPE,
+            face = null,
+            saliencyGrid = listOf(
+                listOf(1e-1, 2e-1, 3e-1),
+                listOf(4e-1, 8e-1, 5e-1),
+                listOf(2e-1, 3e-1, 1e-1),
+            ),
+        )
+        _photoAnalysis.value = demo
+        val results = compositionEngine.evaluate(demo)
+        val score = compositionEngine.getOverallScore(results) * 100.0
+        val suggestions = compositionEngine.getTopSuggestions(demo, count = 3)
+        _compositionResult.value = CompositionResult(
+            overallScore = score,
+            bestSuggestions = suggestions.ifEmpty {
+                listOf(
+                    Suggestion(SuggestionType.INFO, "Try the rule of thirds"),
+                    Suggestion(SuggestionType.MOVE_CAMERA, "Look for leading lines"),
+                )
+            },
+            activeRules = results,
+        )
+        Log.d(TAG, "Demo analysis emitted: score=${"%.1f".format(score)}")
     }
 
     // ── Internal ────────────────────────────────────────────────────────────

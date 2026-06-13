@@ -48,12 +48,16 @@ fun CameraScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    val composableScope = rememberCoroutineScope()
+
     // Real composition pipeline: FrameAnalyzer → PhotoCompositionEngine (13 rules) → result.
+    // Scope is passed for demo-mode timeout fallback.
     val frameAnalyzer = remember { FrameAnalyzer() }
     val pipeline = remember {
         CameraCompositionPipeline(
             frameAnalyzer = frameAnalyzer,
             compositionEngine = PhotoCompositionEngine(ALL_RULES),
+            scope = composableScope,
         ).also { it.attach() }
     }
 
