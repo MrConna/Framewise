@@ -40,6 +40,7 @@ import com.google.accompanist.permissions.shouldShowRationale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SettingsState.init(applicationContext)
         enableEdgeToEdge()
         setContent {
             FramewiseTheme {

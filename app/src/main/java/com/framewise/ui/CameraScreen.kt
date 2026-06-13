@@ -353,6 +353,7 @@ fun CameraScreen(
                             cameraController.takePhoto { uri ->
                                 val msg = if (uri != null) "Photo saved ✓" else "Failed to save photo"
                                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                if (uri != null) SettingsState.capturedCount++
                             }
                             // Shutter flash: fade in then out over 200ms.
                             coroutineScope.launch {
