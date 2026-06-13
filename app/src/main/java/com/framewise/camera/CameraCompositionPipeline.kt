@@ -2,6 +2,8 @@ package com.framewise.camera
 
 import android.util.Log
 import com.framewise.engine.PhotoCompositionEngine
+import com.framewise.engine.SceneTemplate
+import com.framewise.engine.SceneTemplateRepository
 import com.framewise.engine.types.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -53,6 +55,9 @@ class CameraCompositionPipeline(
     private val _photoAnalysis = MutableStateFlow<PhotoAnalysis?>(null)
     val photoAnalysis: StateFlow<PhotoAnalysis?> = _photoAnalysis.asStateFlow()
 
+    private val _currentTemplate = MutableStateFlow<SceneTemplate?>(null)
+    val currentTemplate: StateFlow<SceneTemplate?> = _currentTemplate.asStateFlow()
+
     private var frameCount = 0
     private var hasRealFrame = false
     private var demoJob: Job? = null
@@ -89,6 +94,7 @@ class CameraCompositionPipeline(
         demoJob?.cancel()
         _compositionResult.value = null
         _photoAnalysis.value = null
+        _currentTemplate.value = null
         Log.d(TAG, "Pipeline detached")
     }
 
@@ -277,6 +283,9 @@ class CameraCompositionPipeline(
 
         // Expose the raw analysis for the overlay (horizon line, subject boxes).
         _photoAnalysis.value = analysis
+
+        // 匹配场景模板（对标可颂「灵感跟拍」）
+        _currentTemplate.value = SceneTemplateRepository.getTemplate(analysis.scene)
 
         val startNs = System.nanoTime()
 

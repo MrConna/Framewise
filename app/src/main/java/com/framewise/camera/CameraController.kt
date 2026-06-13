@@ -7,6 +7,8 @@ import android.graphics.Canvas
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
+import android.media.ToneGenerator
+import android.media.AudioManager
 import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
@@ -42,6 +44,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import com.framewise.engine.types.Scene
 
 /**
  * Observable camera state emitted by [CameraController].
@@ -89,6 +92,10 @@ class CameraController(
     companion object {
         private const val TAG = "CameraController"
         val AVAILABLE_FILTERS = listOf("original", "warm", "cool", "vintage", "bw")
+        // 最大重试绑定次数
+        private const val MAX_BIND_RETRIES = 2
+        // 重试间隔（毫秒）
+        private const val RETRY_DELAY_MS = 500L
     }
 
     private val _state = MutableStateFlow(CameraState())
@@ -102,6 +109,14 @@ class CameraController(
     private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val timerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var timerJob: Job? = null
+    // 绑定重试计数
+    private var bindRetryCount = 0
+    // 用于 filter-on-save 的协程作用域
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // 过滤后的 JPEG 是否应覆盖原始文件
+    private var pendingFilterJobs = 0
+    private var toneGenerator: ToneGenerator? = null
+    var isLevelBeepEnabled = true
 
     var zoomRatio by mutableStateOf(1f)
         private set
@@ -121,22 +136,47 @@ class CameraController(
     var countdownSeconds by mutableStateOf(0)
         private set
 
+    /**
+     * 倒计时进度 0.0 ~ 1.0，用于 UI 显示圆形进度环。
+     * 当 timerSeconds=3 时，每秒增加 1/3；当 timerSeconds=10 时，每秒增加 1/10。
+     */
+    var countdownProgress by mutableStateOf(0f)
+        private set
+
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
-    /** Start the camera preview and image analysis. */
+/** 启动相机预览和图像分析。失败时自动重试 [MAX_BIND_RETRIES] 次。 */
     fun start() {
-        Log.d(TAG, "Starting camera…")
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(previewView.context)
+        Log.d(TAG, "Starting camera with retry support…")
+        bindRetryCount = 0
+        doStart()
+    }
+
+    private fun doStart() {
+        val context = previewView.context
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
             try {
                 val provider = cameraProviderFuture.get()
                 cameraProvider = provider
                 bindUseCases(provider)
+                bindRetryCount = 0  // 成功后重置重试计数
             } catch (e: Exception) {
-                Log.e(TAG, "Camera init failed", e)
-                _state.value = _state.value.copy(isReady = false, error = e.message)
+                Log.e(TAG, "Camera init failed (attempt ${bindRetryCount + 1})", e)
+                if (bindRetryCount < MAX_BIND_RETRIES) {
+                    bindRetryCount++
+                    Log.d(TAG, "Retrying camera bind in ${RETRY_DELAY_MS}ms…")
+                    android.os.Handler(context.mainLooper).postDelayed({
+                        doStart()
+                    }, RETRY_DELAY_MS)
+                } else {
+                    _state.value = _state.value.copy(
+                        isReady = false,
+                        errorMessage = "相机启动失败（已重试${bindRetryCount}次）: ${e.message}"
+                    )
+                }
             }
-        }, ContextCompat.getMainExecutor(previewView.context))
+        }, ContextCompat.getMainExecutor(context))
     }
 
     /** Stop the camera and release resources. */
@@ -147,11 +187,15 @@ class CameraController(
         imageCapture = null
         timerJob?.cancel()
         countdownSeconds = 0
+        countdownProgress = 0f
         zoomRatio = 1f
         _zoomState.value = 1f
         maxZoom = 1f
         isTorchOn = false
+        toneGenerator?.release()
+        toneGenerator = null
         _state.value = CameraState()
+        Log.d(TAG, "Camera stopped, pendingFilterJobs=$pendingFilterJobs")
     }
 
     /**
@@ -201,6 +245,8 @@ class CameraController(
     fun flipCamera() {
         val current = _state.value.isFrontCamera
         isTorchOn = false
+        toneGenerator?.release()
+        toneGenerator = null
         _state.value = _state.value.copy(isFrontCamera = !current, isTorchOn = false)
         cameraProvider?.let { provider ->
             provider.unbindAll()
@@ -227,6 +273,25 @@ class CameraController(
         boundCamera.cameraControl.enableTorch(next)
         isTorchOn = next
         _state.value = _state.value.copy(isTorchOn = next)
+    }
+
+    fun sceneToFilter(scene: Scene): String = when (scene) {
+        Scene.PORTRAIT -> "warm"
+        Scene.FOOD -> "vintage"
+        Scene.LANDSCAPE -> "cool"
+        Scene.ARCHITECTURE -> "bw"
+        Scene.STREET -> "original"
+        Scene.PRODUCT -> "original"
+        Scene.GENERIC -> "original"
+    }
+
+    fun playLevelBeep(horizonAngle: Double) {
+        if (!isLevelBeepEnabled) return
+        val gen = toneGenerator ?: ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60).also { toneGenerator = it }
+        when {
+            kotlin.math.abs(horizonAngle) < 1.0 -> gen.startTone(ToneGenerator.TONE_PROP_ACK, 200)
+            kotlin.math.abs(horizonAngle) < 3.0 -> gen.startTone(ToneGenerator.TONE_PROP_NACK, 100)
+        }
     }
 
     fun selectFilterMode(mode: String) {
@@ -286,20 +351,36 @@ class CameraController(
         }
     }
 
+    /**
+     * 取消当前倒计时。如果正在倒计时，重置所有状态。
+     */
+    fun cancelTimer() {
+        timerJob?.cancel()
+        timerJob = null
+        countdownSeconds = 0
+        countdownProgress = 0f
+        Log.d(TAG, "Timer cancelled by user")
+    }
+
     fun captureWithTimer(onPhotoSaved: (Uri) -> Unit) {
         timerJob?.cancel()
         val seconds = timerSeconds
         if (seconds <= 0) {
             countdownSeconds = 0
+            countdownProgress = 0f
             takePhoto(onPhotoSaved)
             return
         }
         timerJob = timerScope.launch {
+            countdownProgress = 1f
             for (remaining in seconds downTo 1) {
                 countdownSeconds = remaining
+                // 根据总秒数计算进度：当前剩余 / 总秒数
+                countdownProgress = remaining.toFloat() / seconds.toFloat()
                 delay(1000)
             }
             countdownSeconds = 0
+            countdownProgress = 0f
             takePhoto(onPhotoSaved)
         }
     }

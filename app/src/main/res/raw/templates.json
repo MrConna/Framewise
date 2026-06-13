@@ -1,0 +1,83 @@
+[
+  {
+    "scene": "portrait",
+    "label": "人像",
+    "icon": "🧑",
+    "recommendedRules": ["thirds", "headroom", "leading_lines"],
+    "suggestedFilter": "warm",
+    "description": "竖向构图，人物头部放在上三分线交点",
+    "tips": [
+      "降低机位10cm，让下巴与下三分线对齐",
+      "侧光拍摄增强面部立体感",
+      "背景选择简洁纯色"
+    ],
+    "poseHint": "身体微侧45°，重心放在后脚，双手自然下垂或插兜",
+    "subjectX": 0.5,
+    "subjectY": 0.30,
+    "subjectSize": 0.20
+  },
+  {
+    "scene": "landscape",
+    "label": "风景",
+    "icon": "🌄",
+    "recommendedRules": ["thirds", "horizon", "leading_lines"],
+    "suggestedFilter": "cool",
+    "description": "地平线对齐上三分线，突出前景",
+    "tips": [
+      "降低机位到膝盖高度增加层次感",
+      "寻找道路或河流作为引导线",
+      "使用小光圈保证前后景清晰"
+    ],
+    "subjectX": 0.5,
+    "subjectY": 0.33,
+    "subjectSize": 0.12
+  },
+  {
+    "scene": "food",
+    "label": "美食",
+    "icon": "🍜",
+    "recommendedRules": ["center", "golden_ratio", "diagonal"],
+    "suggestedFilter": "vintage",
+    "description": "手机与桌面呈45°角俯拍，主体在中央偏右",
+    "tips": [
+      "侧光拍摄让阴影在左前方",
+      "搭配餐具或桌布增加画面层次",
+      "背景虚化突出主体"
+    ],
+    "subjectX": 0.58,
+    "subjectY": 0.45,
+    "subjectSize": 0.25
+  },
+  {
+    "scene": "architecture",
+    "label": "建筑",
+    "icon": "🏛️",
+    "recommendedRules": ["symmetry", "thirds", "golden_ratio"],
+    "suggestedFilter": "bw",
+    "description": "站在建筑中轴线上，左右对称",
+    "tips": [
+      "使用广角端拍摄完整建筑",
+      "检查竖线是否垂直",
+      "选择晴天早晚光线柔和的时段"
+    ],
+    "subjectX": 0.50,
+    "subjectY": 0.40,
+    "subjectSize": 0.18
+  },
+  {
+    "scene": "generic",
+    "label": "通用",
+    "icon": "📸",
+    "recommendedRules": ["thirds", "leading_lines", "fill_the_frame"],
+    "suggestedFilter": "original",
+    "description": "尝试三分法构图，让主体占据画面三分之一",
+    "tips": [
+      "寻找干净的背景",
+      "注意画面边缘不要有杂物",
+      "尝试不同角度拍摄"
+    ],
+    "subjectX": 0.5,
+    "subjectY": 0.33,
+    "subjectSize": 0.15
+  }
+]

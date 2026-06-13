@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.rememberNavController
+import com.framewise.ui.OnboardingScreen
 import com.framewise.ui.navigation.NavGraph
 import com.framewise.ui.theme.FramewiseTheme
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -43,7 +45,10 @@ class MainActivity : ComponentActivity() {
         SettingsState.init(applicationContext)
         enableEdgeToEdge()
         setContent {
-            FramewiseTheme {
+            val systemDark = isSystemInDarkTheme()
+            FramewiseTheme(
+                darkTheme = SettingsState.isDarkTheme(systemDark)
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
@@ -58,6 +63,13 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun FramewiseApp() {
+    // First-run onboarding: shown once, gated by a persisted SharedPreferences flag.
+    var showOnboarding by rememberSaveable { mutableStateOf(!SettingsState.onboardingCompleted) }
+    if (showOnboarding) {
+        OnboardingScreen(onFinished = { showOnboarding = false })
+        return
+    }
+
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
     // Track whether we've already asked, so a first launch (where
     // shouldShowRationale is also false) isn't mistaken for a permanent denial.

@@ -18,7 +18,7 @@ android {
         //    CameraState.errorMessage, shown as a red error banner with Retry.
         //  • Permanently-denied camera permission now shows a Settings guidance
         //    message instead of looping the request prompt.
-        versionName = "0.1.9"
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -101,6 +101,11 @@ dependencies {
 
     // --- Coil (async image loading for the gallery) ---
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // --- Lottie (first-run onboarding animations; the screens themselves are
+    //     Canvas-drawn so no .json asset is required, but the dependency is kept
+    //     available for future richer animations) ---
+    implementation("com.airbnb.android:lottie-compose:6.4.0")
 
     // --- OpenCV (optional: horizon / histogram CV) ---
     // Add the OpenCV Android SDK as a module, then uncomment:

@@ -25,6 +25,7 @@ object SettingsState {
         _diagonalEnabled = prefs!!.getBoolean("diagonal", false)
         _keepScreenOn = prefs!!.getBoolean("keep_screen_on", true)
         _capturedCount = prefs!!.getInt("captured_count", 0)
+        _onboardingCompleted = prefs!!.getBoolean("onboarding_completed", false)
     }
 
     private fun save(key: String, value: Any) {
@@ -67,4 +68,25 @@ object SettingsState {
     var capturedCount: Int
         get() = _capturedCount
         set(v) { _capturedCount = v; save("captured_count", v) }
+
+    /** 是否已完成首次使用引导。首次启动为 false，看完引导后置 true 并持久化。 */
+    private var _onboardingCompleted by mutableStateOf(false)
+    var onboardingCompleted: Boolean
+        get() = _onboardingCompleted
+        set(v) { _onboardingCompleted = v; save("onboarding_completed", v) }
+
+    // ── 主题设置 ───────────────────────────────────────────────────────
+
+    /** 主题模式: "system"(跟随系统) / "dark"(深色) / "light"(浅色) */
+    private var _themeMode by mutableStateOf("system")
+    var themeMode: String
+        get() = _themeMode
+        set(v) { _themeMode = v; save("theme_mode", v) }
+
+    /** 是否为深色模式（供主题入口判断） */
+    fun isDarkTheme(systemDark: Boolean): Boolean = when (_themeMode) {
+        "dark" -> true
+        "light" -> false
+        else -> systemDark
+    }
 }

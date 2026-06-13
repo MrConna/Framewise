@@ -2,17 +2,25 @@ package com.framewise.ui
 
 import android.graphics.Paint
 import android.net.Uri
+import android.view.HapticFeedbackConstants
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,6 +32,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.scale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cached
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -33,14 +42,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -61,16 +71,26 @@ import com.framewise.camera.CameraCompositionPipeline
 import com.framewise.camera.CameraController
 import com.framewise.camera.FrameAnalyzer
 import com.framewise.engine.PhotoCompositionEngine
+import com.framewise.engine.PoseLibrary
+import com.framewise.engine.PoseSuggestion
 import com.framewise.engine.rules.ALL_RULES
 import com.framewise.engine.types.Suggestion
 import com.framewise.engine.types.SuggestionType
 import com.framewise.engine.types.PhotoAnalysis
 import com.framewise.engine.types.Scene
+import com.framewise.engine.SceneTemplate
+import com.framewise.engine.SceneTemplateRepository
+import com.framewise.ui.components.HistogramView
 import com.framewise.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.min
+import kotlin.math.sin
 
 @Composable
 fun CameraScreen(
@@ -105,6 +125,11 @@ fun CameraScreen(
     // Observe the engine output and the raw analysis (used by the overlay).
     val photoAnalysis by pipeline.photoAnalysis.collectAsState()
     val compositionResult by pipeline.compositionResult.collectAsState()
+    val currentTemplate by pipeline.currentTemplate.collectAsState()
+
+    LaunchedEffect(context) {
+        SceneTemplateRepository.load(context)
+    }
 
     val previewView = remember {
         PreviewView(context).apply {
@@ -127,6 +152,7 @@ fun CameraScreen(
     var gridVisible by remember { mutableStateOf(true) }
     var showExampleOverlay by remember { mutableStateOf(false) }
     var suggestionIndex by remember { mutableStateOf(0) }
+    var selectedPose by remember { mutableStateOf<PoseSuggestion?>(null) }
 
     // Shutter flash: white overlay fades in then out over ~200ms on capture.
     val coroutineScope = rememberCoroutineScope()
@@ -175,6 +201,7 @@ fun CameraScreen(
 
     val overlayMessage = cameraStatus ?: if (showEmptyHint) pointHint else null
 
+    // 根据评分范围计算颜色，使用弹性过渡动画
     val guidanceColor = compositionResult?.let { result ->
         when {
             result.overallScore >= 85 -> ScorePerfect
@@ -182,6 +209,12 @@ fun CameraScreen(
             else -> ScoreBad
         }
     } ?: ScoreGood
+    // 评分值弹性动画过渡
+    val animatedScore by animateFloatAsState(
+        targetValue = (compositionResult?.overallScore ?: 0f).toFloat(),
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = 180f),
+        label = "scoreSpring"
+    )
     val guidanceCues = remember(photoAnalysis) { buildGuidanceCues(photoAnalysis) }
     val suggestions = sceneSpecificSuggestions(photoAnalysis?.scene)
         .ifEmpty { compositionResult?.bestSuggestions.orEmpty() }
@@ -203,7 +236,13 @@ fun CameraScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
+    LaunchedEffect(photoAnalysis?.scene) {
+        if (photoAnalysis?.scene != Scene.PORTRAIT) {
+            selectedPose = null
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // 1. Full screen camera preview.
         AndroidView(
             factory = { previewView },
@@ -245,6 +284,11 @@ fun CameraScreen(
                         cap = StrokeCap.Round
                     )
                 }
+                drawGoldenRatioSpiral(
+                    color = ScorePerfect.copy(alpha = 0.38f),
+                    width = width,
+                    height = height,
+                )
             }
 
             // B. Horizon level indicator.
@@ -397,10 +441,12 @@ fun CameraScreen(
             )
         }
 
-        compositionResult?.let { result ->
-            ScoreBadge(
-                score = result.overallScore.toInt(),
+        // 在 top-right 显示弧形评分仪表盘（带弹性动画）
+        if (compositionResult != null) {
+            ScoreArcGauge(
+                score = animatedScore.toInt().coerceIn(0, 100),
                 color = guidanceColor,
+                label = "构图",
                 modifier = Modifier
                     .statusBarsPadding()
                     .align(Alignment.TopEnd)
@@ -409,16 +455,68 @@ fun CameraScreen(
             )
         }
 
-        MinimalSuggestionLabel(
-            suggestion = suggestions[suggestionIndex.coerceIn(0, suggestions.lastIndex)],
-            color = guidanceColor,
+        HistogramView(
+            brightnessData = photoAnalysis?.brightness,
+            modifier = Modifier
+                .statusBarsPadding()
+                .align(Alignment.TopEnd)
+                .padding(top = 108.dp, end = 16.dp)
+                .zIndex(2f)
+        )
+
+        HorizonLevelStatus(
+            analysis = photoAnalysis,
+            modifier = Modifier
+                .statusBarsPadding()
+                .align(Alignment.TopCenter)
+                .padding(top = 88.dp)
+                .zIndex(2.1f)
+        )
+
+        currentTemplate?.let { template ->
+            SceneTemplateRecommendationBar(
+                template = template,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 168.dp)
+                    .zIndex(2.15f)
+            )
+        }
+
+        selectedPose?.let { pose ->
+            PoseReferenceOverlay(
+                pose = pose,
+                onDismiss = { selectedPose = null },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(2.35f)
+            )
+        }
+
+        // 建议标签：从底部滑入 + 淡入组合动画
+        AnimatedContent(
+            targetState = suggestions[suggestionIndex.coerceIn(0, suggestions.lastIndex)],
+            transitionSpec = {
+                ContentTransform(
+                    slideInVertically { it + 40 } + fadeIn(),
+                    slideOutVertically { -it - 40 } + fadeOut()
+                )
+            },
+            label = "suggestionSlide",
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(bottom = 122.dp)
                 .zIndex(2.2f)
-        )
+        ) { suggestion ->
+            MinimalSuggestionLabel(
+                suggestion = suggestion,
+                color = guidanceColor
+            )
+        }
 
+        // 底部控制栏：毛玻璃效果（参考 awesome-android-ui: EtsyBlur）
         Surface(
             color = SurfaceDark.copy(alpha = 0.48f),
             shape = RoundedCornerShape(28.dp),
@@ -428,6 +526,7 @@ fun CameraScreen(
                 .navigationBarsPadding()
                 .padding(start = 14.dp, top = 0.dp, end = 14.dp, bottom = 14.dp)
                 .zIndex(2f)
+                .blur(radius = 2.dp)
                 .border(
                     width = 0.8.dp,
                     color = White.copy(alpha = 0.10f),
@@ -446,6 +545,15 @@ fun CameraScreen(
                     onFilterSelected = cameraController::selectFilterMode,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                if (photoAnalysis?.scene == Scene.PORTRAIT) {
+                    PoseRecommendationRow(
+                        poses = PoseLibrary.recommendedFor(Scene.PORTRAIT),
+                        selectedPose = selectedPose,
+                        onPoseSelected = { selectedPose = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
                 // Control bar: recent-photo thumbnail / gallery + torch + shutter.
                 Box(
@@ -533,18 +641,24 @@ fun CameraScreen(
                         }
                         LargeFloatingActionButton(
                             onClick = {
+                                // 📳 快门触感反馈
+                                previewView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 if (cameraState.isReady) {
                                     cameraController.captureWithTimer { uri ->
                                         val msg = photoSavedMsg
                                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                         SettingsState.capturedCount++
                                         lastPhotoUri = uri
+                                        // 📳 拍照保存后更强的触感
+                                        previewView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                         coroutineScope.launch {
                                             flashAlpha.animateTo(1f, tween(100))
                                             flashAlpha.animateTo(0f, tween(100))
                                         }
                                     }
                                 } else {
+                                    // 📳 不可用时轻微震动提醒
+                                    previewView.performHapticFeedback(HapticFeedbackConstants.REJECT)
                                     Toast.makeText(context, cameraNotReadyMsg, Toast.LENGTH_SHORT).show()
                                     cameraController.requestBinding()
                                 }
@@ -583,19 +697,89 @@ fun CameraScreen(
                 .zIndex(2f)
         )
 
+        // 倒计时覆盖层：圆形进度环 + 数字动画 + 取消按钮
         if (cameraController.countdownSeconds > 0) {
+            val countdownText = cameraController.countdownSeconds.toString()
+            val progress = cameraController.countdownProgress
+            val animatedScale by animateFloatAsState(
+                targetValue = if (cameraController.countdownSeconds > 0) 1f else 0.8f,
+                animationSpec = spring(dampingRatio = 0.5f, stiffness = 400f),
+                label = "countdownScale",
+            )
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .zIndex(3f)
-                    .background(Color.Black.copy(alpha = 0.24f)),
+                    .background(Color.Black.copy(alpha = 0.24f))
+                    .clickable(enabled = cameraController.countdownSeconds > 0) {
+                        cameraController.cancelTimer()
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = cameraController.countdownSeconds.toString(),
-                    style = MaterialTheme.typography.displayLarge,
-                    color = White
-                )
+                AnimatedContent(
+                    targetState = countdownText,
+                    transitionSpec = {
+                        ContentTransform(
+                            fadeIn(tween(100)) + slideInVertically(tween(200)),
+                            fadeOut(tween(100)) + slideOutVertically(tween(200))
+                        )
+                    },
+                    label = "countdownNumber",
+                ) { text ->
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // 圆形进度环
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.size(180.dp * animatedScale)
+                        ) {
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val strokeWidth = 8.dp.toPx()
+                                val diameter = size.minDimension - strokeWidth
+                                // 背景圆环（半透明）
+                                drawArc(
+                                    color = White.copy(alpha = 0.2f),
+                                    startAngle = -90f,
+                                    sweepAngle = 360f,
+                                    useCenter = false,
+                                    topLeft = androidx.compose.ui.geometry.Offset(
+                                        (size.width - diameter) / 2f,
+                                        (size.height - diameter) / 2f,
+                                    ),
+                                    size = androidx.compose.ui.geometry.Size(diameter, diameter),
+                                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                                )
+                                // 进度弧线 (从 -90° 开始，顺时针递减)
+                                drawArc(
+                                    color = AccentBlue,
+                                    startAngle = -90f,
+                                    sweepAngle = -(progress * 360f),
+                                    useCenter = false,
+                                    topLeft = androidx.compose.ui.geometry.Offset(
+                                        (size.width - diameter) / 2f,
+                                        (size.height - diameter) / 2f,
+                                    ),
+                                    size = androidx.compose.ui.geometry.Size(diameter, diameter),
+                                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                                )
+                            }
+                            // 中心数字
+                            Text(
+                                text = text,
+                                style = MaterialTheme.typography.displayLarge,
+                                color = White,
+                            )
+                        }
+                        // 取消按钮提示文字
+                        Text(
+                            text = "点击任意位置取消",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = White.copy(alpha = 0.6f),
+                        )
+                    }
+                }
             }
         }
 
@@ -678,6 +862,17 @@ private fun FilterSelector(
     ) {
         filters.forEach { filter ->
             val selected = filter.id == selectedFilter
+            // 选中时弹性缩放的边框动画
+            val animatedBorderWidth by animateFloatAsState(
+                targetValue = if (selected) 2f else 1f,
+                animationSpec = spring(dampingRatio = 0.5f, stiffness = 400f),
+                label = "filterBorder${filter.id}"
+            )
+            val animatedAlpha by animateFloatAsState(
+                targetValue = if (selected) 1f else 0.72f,
+                animationSpec = spring(dampingRatio = 0.5f, stiffness = 400f),
+                label = "filterAlpha${filter.id}"
+            )
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -685,7 +880,7 @@ private fun FilterSelector(
                     .clip(RoundedCornerShape(14.dp))
                     .clickable { onFilterSelected(filter.id) }
                     .border(
-                        width = if (selected) 2.dp else 1.dp,
+                        width = animatedBorderWidth.dp,
                         color = if (selected) AccentBlue else White.copy(alpha = 0.16f),
                         shape = RoundedCornerShape(14.dp)
                     )
@@ -700,7 +895,7 @@ private fun FilterSelector(
                 Text(
                     text = filter.label,
                     style = MaterialTheme.typography.labelSmall,
-                    color = White.copy(alpha = if (selected) 1f else 0.72f)
+                    color = White.copy(alpha = animatedAlpha)
                 )
             }
         }
@@ -721,52 +916,268 @@ private data class GuidanceCue(
 )
 
 @Composable
-private fun ScoreBadge(
-    score: Int,
-    color: Color,
+private fun PoseRecommendationRow(
+    poses: List<PoseSuggestion>,
+    selectedPose: PoseSuggestion?,
+    onPoseSelected: (PoseSuggestion) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = Color.Black.copy(alpha = 0.36f),
-        contentColor = White,
-        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.7f))
+    Row(
+        modifier = modifier
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = score.coerceIn(0, 100).toString(),
-            style = MaterialTheme.typography.labelLarge,
-            color = White,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+            text = "姿势",
+            style = MaterialTheme.typography.labelMedium,
+            color = White.copy(alpha = 0.72f),
+            modifier = Modifier.padding(end = 2.dp)
         )
+        poses.forEach { pose ->
+            val selected = selectedPose?.id == pose.id
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = if (selected) AccentBlue.copy(alpha = 0.32f) else SurfaceDark.copy(alpha = 0.38f),
+                contentColor = White,
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    if (selected) AccentBlue.copy(alpha = 0.78f) else White.copy(alpha = 0.12f)
+                ),
+                modifier = Modifier
+                    .height(48.dp)
+                    .clickable { onPoseSelected(pose) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Text(
+                        text = pose.icon,
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Column(
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.widthIn(min = 68.dp, max = 112.dp)
+                    ) {
+                        Text(
+                            text = pose.name,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = White.copy(alpha = 0.94f),
+                            maxLines = 1,
+                        )
+                        Text(
+                            text = pose.description,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = White.copy(alpha = 0.54f),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
+@Composable
+private fun PoseReferenceOverlay(
+    pose: PoseSuggestion,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.36f))
+            .clickable { onDismiss() },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth(0.72f)
+                .fillMaxHeight(0.58f)
+        ) {
+            drawPoseSilhouette(pose)
+        }
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = SurfaceDark.copy(alpha = 0.68f),
+            contentColor = White,
+            border = androidx.compose.foundation.BorderStroke(1.dp, White.copy(alpha = 0.16f)),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(start = 18.dp, end = 18.dp, bottom = 188.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = pose.icon,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = pose.name,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = White.copy(alpha = 0.95f)
+                    )
+                    Text(
+                        text = pose.description,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = White.copy(alpha = 0.68f),
+                        maxLines = 2,
+                    )
+                }
+                Text(
+                    text = "参考",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AccentBlue.copy(alpha = 0.9f),
+                    modifier = Modifier
+                        .background(AccentBlue.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HorizonLevelStatus(
+    analysis: PhotoAnalysis?,
+    modifier: Modifier = Modifier,
+) {
+    val horizon = analysis?.horizon ?: return
+    if (!horizon.detected) return
+
+    val angle = horizon.angle.toFloat()
+    val level = abs(angle) < 1.2f
+    val color = if (level) ScorePerfect else ScoreGood
+    val label = when {
+        level -> "水平"
+        angle > 0 -> "右倾"
+        else -> "左倾"
+    }
+
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = SurfaceDark.copy(alpha = 0.58f),
+        contentColor = White,
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.52f)),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Canvas(modifier = Modifier.size(width = 34.dp, height = 14.dp)) {
+                val centerY = size.height / 2f
+                drawLine(
+                    color = White.copy(alpha = 0.22f),
+                    start = Offset(0f, centerY),
+                    end = Offset(size.width, centerY),
+                    strokeWidth = 1.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                rotate(degrees = angle.coerceIn(-8f, 8f), pivot = Offset(size.width / 2f, centerY)) {
+                    drawLine(
+                        color = color,
+                        start = Offset(2f, centerY),
+                        end = Offset(size.width - 2f, centerY),
+                        strokeWidth = 2.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                }
+            }
+            Text(
+                text = "$label ${abs(angle).toInt().coerceAtLeast(if (level) 0 else 1)}°",
+                style = MaterialTheme.typography.labelMedium,
+                color = White.copy(alpha = 0.94f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SceneTemplateRecommendationBar(
+    template: SceneTemplate,
+    modifier: Modifier = Modifier,
+) {
+    val tip = template.poseHint ?: template.tips.firstOrNull() ?: template.description
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = SurfaceDark.copy(alpha = 0.62f),
+        contentColor = White,
+        border = androidx.compose.foundation.BorderStroke(1.dp, AccentBlue.copy(alpha = 0.34f)),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = template.icon,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "${template.label}模板 · ${template.description}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = White.copy(alpha = 0.94f),
+                    maxLines = 1,
+                )
+                Text(
+                    text = tip,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = White.copy(alpha = 0.66f),
+                    maxLines = 1,
+                )
+            }
+            Text(
+                text = template.suggestedFilter,
+                style = MaterialTheme.typography.labelSmall,
+                color = AccentBlue.copy(alpha = 0.92f),
+                modifier = Modifier
+                    .background(AccentBlue.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 底部建议标签。外部已用 AnimatedContent 包裹以提供滑入/淡出动画。
+ */
 @Composable
 private fun MinimalSuggestionLabel(
     suggestion: Suggestion,
     color: Color,
     modifier: Modifier = Modifier,
 ) {
-    Crossfade(
-        targetState = chineseSuggestionText(suggestion.text),
-        animationSpec = tween(durationMillis = 420),
-        label = "suggestionFade",
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = Color.Black.copy(alpha = 0.42f),
+        contentColor = White,
         modifier = modifier,
-    ) { text ->
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = Color.Black.copy(alpha = 0.42f),
-            contentColor = White,
-            border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.48f))
-        ) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodySmall,
-                color = White.copy(alpha = 0.92f),
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-            )
-        }
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.48f))
+    ) {
+        Text(
+            text = chineseSuggestionText(suggestion.text),
+            style = MaterialTheme.typography.bodySmall,
+            color = White.copy(alpha = 0.92f),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+        )
     }
 }
 
@@ -830,6 +1241,111 @@ private fun sceneSpecificSuggestions(scene: Scene?): List<Suggestion> = when (sc
     else -> emptyList()
 }
 
+private fun DrawScope.drawPoseSilhouette(pose: PoseSuggestion) {
+    val line = White.copy(alpha = 0.62f)
+    val glow = AccentBlue.copy(alpha = 0.16f)
+    val stroke = 5.dp.toPx()
+    val guideStroke = 2.dp.toPx()
+    val centerX = size.width / 2f
+    val top = size.height * 0.08f
+    val headRadius = min(size.width, size.height) * 0.075f
+    val head = Offset(centerX, top + headRadius)
+    val neck = Offset(centerX, head.y + headRadius + 10.dp.toPx())
+    val hip = Offset(centerX, size.height * 0.55f)
+
+    drawRoundRect(
+        color = glow,
+        topLeft = Offset(size.width * 0.16f, size.height * 0.04f),
+        size = Size(size.width * 0.68f, size.height * 0.84f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(32.dp.toPx(), 32.dp.toPx()),
+        style = Stroke(width = guideStroke)
+    )
+
+    when (pose.id) {
+        "wall_lean" -> {
+            val wallX = size.width * 0.32f
+            drawLine(White.copy(alpha = 0.22f), Offset(wallX, size.height * 0.10f), Offset(wallX, size.height * 0.82f), strokeWidth = guideStroke)
+            drawPoseBody(head, neck.copy(x = centerX - 18.dp.toPx()), hip.copy(x = centerX + 14.dp.toPx()), line, stroke)
+            drawArms(neck.copy(x = centerX - 18.dp.toPx()), Offset(centerX + 42.dp.toPx(), size.height * 0.35f), Offset(centerX - 44.dp.toPx(), size.height * 0.38f), line, stroke)
+            drawLegs(hip.copy(x = centerX + 14.dp.toPx()), Offset(centerX - 34.dp.toPx(), size.height * 0.82f), Offset(centerX + 58.dp.toPx(), size.height * 0.80f), line, stroke)
+        }
+        "seated_forward" -> {
+            val seatY = size.height * 0.62f
+            drawLine(White.copy(alpha = 0.22f), Offset(size.width * 0.28f, seatY), Offset(size.width * 0.72f, seatY), strokeWidth = guideStroke, cap = StrokeCap.Round)
+            drawPoseBody(head, neck, Offset(centerX + 18.dp.toPx(), seatY - 8.dp.toPx()), line, stroke)
+            drawArms(neck, Offset(centerX - 56.dp.toPx(), seatY - 18.dp.toPx()), Offset(centerX + 62.dp.toPx(), seatY - 16.dp.toPx()), line, stroke)
+            drawLegs(Offset(centerX + 18.dp.toPx(), seatY - 8.dp.toPx()), Offset(centerX - 78.dp.toPx(), size.height * 0.76f), Offset(centerX + 86.dp.toPx(), size.height * 0.76f), line, stroke)
+        }
+        "hand_near_face", "hair_adjust", "window_light" -> {
+            drawPoseBody(head, neck, hip, line, stroke)
+            drawArms(neck, Offset(centerX - 42.dp.toPx(), head.y + 4.dp.toPx()), Offset(centerX + 72.dp.toPx(), size.height * 0.45f), line, stroke)
+            drawLegs(hip, Offset(centerX - 42.dp.toPx(), size.height * 0.82f), Offset(centerX + 34.dp.toPx(), size.height * 0.82f), line, stroke)
+        }
+        "walking_motion" -> {
+            drawPoseBody(head.copy(x = centerX + 8.dp.toPx()), neck.copy(x = centerX + 6.dp.toPx()), hip.copy(x = centerX - 12.dp.toPx()), line, stroke)
+            drawArms(neck, Offset(centerX - 62.dp.toPx(), size.height * 0.42f), Offset(centerX + 66.dp.toPx(), size.height * 0.32f), line, stroke)
+            drawLegs(hip.copy(x = centerX - 12.dp.toPx()), Offset(centerX - 86.dp.toPx(), size.height * 0.82f), Offset(centerX + 78.dp.toPx(), size.height * 0.76f), line, stroke)
+        }
+        "look_over_shoulder", "side_profile" -> {
+            drawPoseBody(head.copy(x = centerX - 10.dp.toPx()), neck.copy(x = centerX + 8.dp.toPx()), hip.copy(x = centerX + 28.dp.toPx()), line, stroke)
+            drawArms(neck.copy(x = centerX + 8.dp.toPx()), Offset(centerX - 34.dp.toPx(), size.height * 0.43f), Offset(centerX + 74.dp.toPx(), size.height * 0.43f), line, stroke)
+            drawLegs(hip.copy(x = centerX + 28.dp.toPx()), Offset(centerX - 24.dp.toPx(), size.height * 0.82f), Offset(centerX + 66.dp.toPx(), size.height * 0.82f), line, stroke)
+        }
+        "arms_crossed" -> {
+            drawPoseBody(head, neck, hip, line, stroke)
+            drawLine(line, Offset(centerX - 58.dp.toPx(), size.height * 0.35f), Offset(centerX + 54.dp.toPx(), size.height * 0.45f), strokeWidth = stroke, cap = StrokeCap.Round)
+            drawLine(line, Offset(centerX + 58.dp.toPx(), size.height * 0.35f), Offset(centerX - 52.dp.toPx(), size.height * 0.45f), strokeWidth = stroke, cap = StrokeCap.Round)
+            drawLegs(hip, Offset(centerX - 38.dp.toPx(), size.height * 0.82f), Offset(centerX + 38.dp.toPx(), size.height * 0.82f), line, stroke)
+        }
+        "low_angle_power" -> {
+            drawPoseBody(head.copy(y = head.y + 18.dp.toPx()), neck.copy(y = neck.y + 18.dp.toPx()), hip.copy(y = hip.y + 24.dp.toPx()), line, stroke)
+            drawArms(neck.copy(y = neck.y + 18.dp.toPx()), Offset(centerX - 66.dp.toPx(), size.height * 0.48f), Offset(centerX + 66.dp.toPx(), size.height * 0.48f), line, stroke)
+            drawLegs(hip.copy(y = hip.y + 24.dp.toPx()), Offset(centerX - 82.dp.toPx(), size.height * 0.86f), Offset(centerX + 82.dp.toPx(), size.height * 0.86f), line, stroke)
+        }
+        else -> {
+            drawPoseBody(head, neck, hip, line, stroke)
+            drawArms(neck, Offset(centerX - 58.dp.toPx(), size.height * 0.46f), Offset(centerX + 58.dp.toPx(), size.height * 0.40f), line, stroke)
+            drawLegs(hip, Offset(centerX - 42.dp.toPx(), size.height * 0.82f), Offset(centerX + 48.dp.toPx(), size.height * 0.80f), line, stroke)
+        }
+    }
+}
+
+private fun DrawScope.drawPoseBody(
+    head: Offset,
+    neck: Offset,
+    hip: Offset,
+    color: Color,
+    stroke: Float,
+) {
+    val headRadius = min(size.width, size.height) * 0.075f
+    drawCircle(color.copy(alpha = 0.18f), radius = headRadius * 1.18f, center = head)
+    drawCircle(color, radius = headRadius, center = head, style = Stroke(width = stroke))
+    drawLine(color, neck, hip, strokeWidth = stroke, cap = StrokeCap.Round)
+    drawLine(color.copy(alpha = 0.72f), Offset(neck.x - 34.dp.toPx(), neck.y + 12.dp.toPx()), Offset(neck.x + 34.dp.toPx(), neck.y + 12.dp.toPx()), strokeWidth = stroke, cap = StrokeCap.Round)
+}
+
+private fun DrawScope.drawArms(
+    shoulder: Offset,
+    leftHand: Offset,
+    rightHand: Offset,
+    color: Color,
+    stroke: Float,
+) {
+    drawLine(color, Offset(shoulder.x - 28.dp.toPx(), shoulder.y + 18.dp.toPx()), leftHand, strokeWidth = stroke, cap = StrokeCap.Round)
+    drawLine(color, Offset(shoulder.x + 28.dp.toPx(), shoulder.y + 18.dp.toPx()), rightHand, strokeWidth = stroke, cap = StrokeCap.Round)
+}
+
+private fun DrawScope.drawLegs(
+    hip: Offset,
+    leftFoot: Offset,
+    rightFoot: Offset,
+    color: Color,
+    stroke: Float,
+) {
+    drawLine(color, hip, leftFoot, strokeWidth = stroke, cap = StrokeCap.Round)
+    drawLine(color, hip, rightFoot, strokeWidth = stroke, cap = StrokeCap.Round)
+}
+
 private fun DrawScope.drawGuidanceArrow(
     direction: String,
     subjectX: Float,
@@ -884,6 +1400,42 @@ private fun DrawScope.drawGuidanceArrow(
         }
     }
     drawGuidanceLabel(label, x, y - length * 0.68f, arrowColor)
+}
+
+private fun DrawScope.drawGoldenRatioSpiral(
+    color: Color,
+    width: Float,
+    height: Float,
+) {
+    val thetaMax = (PI * 4.5).toFloat()
+    val growth = (ln(1.61803398875) / (PI / 2.0)).toFloat()
+    val maxRadius = min(width, height) * 0.48f
+    val baseRadius = maxRadius / exp(growth * thetaMax)
+    val center = Offset(width * 0.50f, height * 0.47f)
+    val path = Path()
+
+    for (i in 0..180) {
+        val theta = thetaMax * (i / 180f)
+        val radius = baseRadius * exp(growth * theta)
+        val x = center.x + radius * cos(theta)
+        val y = center.y + radius * sin(theta)
+        if (i == 0) {
+            path.moveTo(x, y)
+        } else {
+            path.lineTo(x, y)
+        }
+    }
+
+    drawPath(
+        path = path,
+        color = color.copy(alpha = 0.18f),
+        style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
+    )
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
+    )
 }
 
 private fun DrawScope.drawArrowHead(tip: Offset, direction: String, color: Color, strokeWidth: Float) {
@@ -1011,12 +1563,35 @@ private fun ZoomSlider(
     }
 }
 
-/** Redesign #1 — semicircular score gauge that fills like a speedometer. */
+/**
+ * 半弧形评分仪表盘，参考 awesome-android-ui 的 ArcProgressStackView / CircleProgress 风格。
+ * - 评分值变化时弹簧弹性动画
+ * - 弧形颜色渐变：<40 红色, 40-70 黄色, >=70 绿色
+ */
 @Composable
-private fun ScoreArcGauge(score: Int, color: Color, label: String) {
+private fun ScoreArcGauge(
+    score: Int,
+    color: Color,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
     val clamped = score.coerceIn(0, 100)
+    // 弹簧弹性动画，让弧线填充时带有弹性感
+    val animatedProgress by animateFloatAsState(
+        targetValue = clamped / 100f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = 200f),
+        label = "scoreArcSpring"
+    )
+    // 根据评分自动选择颜色（分层渐变）
+    val gaugeColor = when {
+        clamped >= 85 -> ScorePerfect
+        clamped >= 70 -> ScoreGood
+        clamped >= 40 -> Color(0xFFFFA500) // 橙色
+        else -> color
+    }
+
     Box(
-        modifier = Modifier.size(width = 130.dp, height = 78.dp),
+        modifier = modifier.size(width = 130.dp, height = 78.dp),
         contentAlignment = Alignment.BottomCenter
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -1024,7 +1599,7 @@ private fun ScoreArcGauge(score: Int, color: Color, label: String) {
             val d = size.width - stroke
             val topLeft = Offset(stroke / 2f, size.height - stroke / 2f - d / 2f)
             val arcSize = Size(d, d)
-            // Background track (top semicircle).
+            // 背景半圆弧（底部半透明轨道）
             drawArc(
                 color = Color(0x33FFFFFF),
                 startAngle = 180f,
@@ -1034,11 +1609,11 @@ private fun ScoreArcGauge(score: Int, color: Color, label: String) {
                 size = arcSize,
                 style = Stroke(width = stroke, cap = StrokeCap.Round)
             )
-            // Progress.
+            // 进度弧（带弹性动画）
             drawArc(
-                color = color,
+                color = gaugeColor,
                 startAngle = 180f,
-                sweepAngle = -(180f * clamped / 100f),
+                sweepAngle = -(180f * animatedProgress),
                 useCenter = false,
                 topLeft = topLeft,
                 size = arcSize,
