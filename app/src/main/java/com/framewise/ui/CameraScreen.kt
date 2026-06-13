@@ -1,6 +1,7 @@
 package com.framewise.ui
 
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -74,18 +75,37 @@ fun CameraScreen(
 
     val cameraState by cameraController.state.collectAsState()
 
-    DisposableEffect(lifecycleOwner) {
+    // Lifecycle management runs ONCE per composition entry. We must NOT release
+    // the analyzer on dispose — CameraX unbinds via the lifecycle automatically.
+    // We only remove the observer so returning from Settings doesn't stack
+    // duplicate camera bindings (the black-screen bug).
+    DisposableEffect(Unit) {
         cameraController.bindToLifecycle()
         onDispose {
-            pipeline.detach()
-            frameAnalyzer.release()
+            cameraController.unbindFromLifecycle()
         }
     }
 
-    // Issue 2 fallback: if no scene has been detected (null/empty analysis) for
-    // more than 2 seconds, prompt the user instead of showing a blank overlay.
+    // Bug 3: camera-level status. If no PhotoAnalysis has arrived yet, surface a
+    // progressive message: "Camera starting…" after 500ms, then "Camera may need
+    // restart" after 3s. Keyed on whether analysis exists so it resets once
+    // frames flow.
+    var cameraStatus by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(photoAnalysis != null) {
+        if (photoAnalysis == null) {
+            cameraStatus = null
+            delay(500)
+            if (photoAnalysis == null) cameraStatus = "Camera starting…"
+            delay(2500) // 500ms + 2500ms = 3s total
+            if (photoAnalysis == null) cameraStatus = "Camera may need restart"
+        } else {
+            cameraStatus = null
+        }
+    }
+
+    // Scene-level fallback: frames are flowing but nothing was detected for >2s.
     val sceneEmpty = photoAnalysis.let { a ->
-        a == null || (a.subjects.isEmpty() && !a.horizon.detected && a.lines.isEmpty())
+        a != null && a.subjects.isEmpty() && !a.horizon.detected && a.lines.isEmpty()
     }
     var showEmptyHint by remember { mutableStateOf(false) }
     LaunchedEffect(sceneEmpty) {
@@ -96,6 +116,10 @@ fun CameraScreen(
             showEmptyHint = false
         }
     }
+
+    // Camera status (no frames) takes priority over the scene hint.
+    val overlayMessage = cameraStatus
+        ?: if (showEmptyHint) "Point at a scene to get composition tips" else null
 
     Box(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
         // 1. Full screen camera preview
@@ -172,8 +196,8 @@ fun CameraScreen(
             }
         }
 
-        // C2. Empty-scene fallback hint (Issue 2)
-        if (showEmptyHint) {
+        // C2. Status / empty-scene fallback message (Bugs 2 & 3)
+        overlayMessage?.let { message ->
             Surface(
                 shape = MaterialTheme.shapes.large,
                 color = SurfaceDark.copy(alpha = 0.8f),
@@ -183,7 +207,7 @@ fun CameraScreen(
                     .padding(24.dp)
             ) {
                 Text(
-                    text = "Point at a scene to get composition tips",
+                    text = message,
                     style = MaterialTheme.typography.bodyLarge,
                     color = White,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)
@@ -301,8 +325,14 @@ fun CameraScreen(
                 // Shutter FAB in the center
                 LargeFloatingActionButton(
                     onClick = {
-                        cameraController.takePhoto { uri ->
-                            // Photo captured successfully!
+                        if (cameraState.isReady) {
+                            cameraController.takePhoto { uri ->
+                                // Photo captured successfully!
+                            }
+                        } else {
+                            // Camera not initialized yet — nudge a rebind and tell the user.
+                            Toast.makeText(context, "Camera not ready", Toast.LENGTH_SHORT).show()
+                            cameraController.requestBinding()
                         }
                     },
                     modifier = Modifier.size(76.dp),

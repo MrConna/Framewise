@@ -67,6 +67,13 @@ class FrameAnalyzer(
     /** Callback invoked on each new [PhotoAnalysis] after analysis completes. */
     var onAnalysisReady: ((PhotoAnalysis) -> Unit)? = null
 
+    /**
+     * The last successfully produced analysis. When a frame fails to decode
+     * (e.g. [yuvToBitmap] returns null), we reuse this instead of emitting an
+     * empty analysis that would blank the overlay and drop all suggestions.
+     */
+    private var lastValidAnalysis: PhotoAnalysis? = null
+
     override fun analyze(imageProxy: ImageProxy) {
         // Skip frames when the previous analysis is still running (throttle).
         if (busy.get()) {
@@ -102,7 +109,10 @@ class FrameAnalyzer(
 
     private fun analyzeFrame(image: Image, rotationDeg: Int): PhotoAnalysis {
         // 1. Convert YUV → downscaled Bitmap for processing.
-        val bitmap = yuvToBitmap(image) ?: return emptyAnalysis()
+        val bitmap = yuvToBitmap(image) ?: run {
+            Log.w(TAG, "yuvToBitmap returned null; reusing last valid analysis")
+            return lastValidAnalysis ?: emptyAnalysis()
+        }
         val w = bitmap.width
         val h = bitmap.height
 
@@ -133,7 +143,7 @@ class FrameAnalyzer(
             scene = scene,
             face = face,
             saliencyGrid = saliencyGrid,
-        )
+        ).also { lastValidAnalysis = it }
     }
 
     // ── Stage a: Subject detection ──────────────────────────────────────────

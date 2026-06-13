@@ -108,10 +108,35 @@ class CameraController(
 
     /**
      * Registers [start]/[stop] as an observer on the lifecycle, so camera
-     * automatically binds on START and unbinds on STOP.
+     * automatically binds on START and unbinds on STOP. Idempotent.
      */
     fun bindToLifecycle() {
         lifecycleOwner.lifecycle.addObserver(this)
+    }
+
+    /**
+     * Unregisters the lifecycle observer. Called when the composable leaves
+     * composition (e.g. navigating to Settings) so we don't accumulate multiple
+     * observers that fight over the same [ProcessCameraProvider] — the root
+     * cause of the black screen on return. CameraX unbinds use cases on its own
+     * when the lifecycle stops; we deliberately do NOT release the analyzer here.
+     */
+    fun unbindFromLifecycle() {
+        lifecycleOwner.lifecycle.removeObserver(this)
+    }
+
+    /**
+     * Force a (re)bind attempt. Used by the shutter when [imageCapture] is still
+     * null because the provider hasn't finished initializing yet.
+     */
+    fun requestBinding() {
+        Log.d(TAG, "requestBinding() — imageCapture=${if (imageCapture == null) "null" else "ready"}")
+        val provider = cameraProvider
+        if (provider == null) {
+            start()
+        } else if (imageCapture == null) {
+            bindUseCases(provider)
+        }
     }
 
     override fun onStart(owner: LifecycleOwner) {

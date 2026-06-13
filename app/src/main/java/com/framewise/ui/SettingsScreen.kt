@@ -5,6 +5,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -16,11 +17,11 @@ fun SettingsScreen(
 ) {
     // In a real app, these values would be backed by Preferences / DataStore.
     // For MVP, we use mutableStateOf.
-    var ruleOfThirdsEnabled by remember { mutableStateOf(true) }
-    var horizonLevelEnabled by remember { mutableStateOf(true) }
-    var goldenRatioEnabled by remember { mutableStateOf(false) }
-    var diagonalEnabled by remember { mutableStateOf(false) }
-    var keepScreenOn by remember { mutableStateOf(true) }
+    var ruleOfThirdsEnabled by rememberSaveable { mutableStateOf(true) }
+    var horizonLevelEnabled by rememberSaveable { mutableStateOf(true) }
+    var goldenRatioEnabled by rememberSaveable { mutableStateOf(false) }
+    var diagonalEnabled by rememberSaveable { mutableStateOf(false) }
+    var keepScreenOn by rememberSaveable { mutableStateOf(true) }
 
     Scaffold(
         topBar = {
