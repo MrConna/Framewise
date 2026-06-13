@@ -8,9 +8,13 @@ import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.Canvas
@@ -21,6 +25,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,15 +46,17 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.pointer.pointerInput
@@ -69,8 +78,11 @@ import com.framewise.engine.types.Scene
 import com.framewise.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.sin
 
 @Composable
 fun CameraScreen(
@@ -127,6 +139,7 @@ fun CameraScreen(
     var gridVisible by remember { mutableStateOf(true) }
     var showExampleOverlay by remember { mutableStateOf(false) }
     var suggestionIndex by remember { mutableStateOf(0) }
+    var suggestionPanelExpanded by remember { mutableStateOf(false) }
 
     // Shutter flash: white overlay fades in then out over ~200ms on capture.
     val coroutineScope = rememberCoroutineScope()
@@ -398,24 +411,29 @@ fun CameraScreen(
         }
 
         compositionResult?.let { result ->
-            ScoreBadge(
+            ArcScoreGauge(
                 score = result.overallScore.toInt(),
                 color = guidanceColor,
                 modifier = Modifier
                     .statusBarsPadding()
                     .align(Alignment.TopEnd)
-                    .padding(top = 22.dp, end = 74.dp)
+                    .padding(top = 16.dp, end = 72.dp)
                     .zIndex(2f)
             )
         }
 
-        MinimalSuggestionLabel(
-            suggestion = suggestions[suggestionIndex.coerceIn(0, suggestions.lastIndex)],
+        SlideUpSuggestionPanel(
+            expanded = suggestionPanelExpanded,
+            onExpandedChange = { suggestionPanelExpanded = it },
+            activeSuggestion = suggestions[suggestionIndex.coerceIn(0, suggestions.lastIndex)],
+            suggestions = suggestions,
+            score = compositionResult?.overallScore?.toInt(),
+            scene = photoAnalysis?.scene,
             color = guidanceColor,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 122.dp)
+                .padding(start = 14.dp, end = 14.dp, bottom = 126.dp)
                 .zIndex(2.2f)
         )
 
@@ -437,9 +455,9 @@ fun CameraScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 10.dp, bottom = 12.dp),
+                    .padding(top = 8.dp, bottom = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterSelector(
                     selectedFilter = cameraController.filterMode,
@@ -469,12 +487,12 @@ fun CameraScreen(
                                 .clickable { onNavigateToGallery() }
                         )
                     } else {
-                        IconButton(
+                        PressableCircleButton(
                             onClick = onNavigateToGallery,
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
-                                .size(54.dp)
-                                .background(SurfaceDark.copy(alpha = 0.7f), CircleShape)
+                                .size(54.dp),
+                            background = SurfaceDark.copy(alpha = 0.68f),
                         ) {
                             Icon(
                                 imageVector = Icons.Default.PhotoLibrary,
@@ -484,17 +502,14 @@ fun CameraScreen(
                         }
                     }
 
-                    IconButton(
+                    PressableCircleButton(
                         onClick = { cameraController.toggleTorch() },
                         enabled = cameraState.isReady,
                         modifier = Modifier
                             .align(Alignment.Center)
                             .offset(x = (-74).dp)
-                            .size(54.dp)
-                            .background(
-                                if (cameraState.isTorchOn) AccentBlue.copy(alpha = 0.85f) else SurfaceDark.copy(alpha = 0.7f),
-                                CircleShape,
-                            )
+                            .size(54.dp),
+                        background = if (cameraState.isTorchOn) AccentBlue.copy(alpha = 0.82f) else SurfaceDark.copy(alpha = 0.68f),
                     ) {
                         Text(
                             text = if (cameraState.isTorchOn) "闪" else "灯",
@@ -503,17 +518,14 @@ fun CameraScreen(
                         )
                     }
 
-                    IconButton(
+                    PressableCircleButton(
                         onClick = { cameraController.cycleTimer() },
                         enabled = cameraState.isReady,
                         modifier = Modifier
                             .align(Alignment.Center)
                             .offset(x = 74.dp)
-                            .size(54.dp)
-                            .background(
-                                if (cameraController.timerSeconds > 0) AccentBlue.copy(alpha = 0.85f) else SurfaceDark.copy(alpha = 0.7f),
-                                CircleShape,
-                            )
+                            .size(54.dp),
+                        background = if (cameraController.timerSeconds > 0) AccentBlue.copy(alpha = 0.82f) else SurfaceDark.copy(alpha = 0.68f),
                     ) {
                         Text(
                             text = when (cameraController.timerSeconds) {
@@ -531,7 +543,7 @@ fun CameraScreen(
                         if (!cameraState.isReady) {
                             PulsingFocusRing()
                         }
-                        LargeFloatingActionButton(
+                        PressableShutterButton(
                             onClick = {
                                 if (cameraState.isReady) {
                                     cameraController.captureWithTimer { uri ->
@@ -549,18 +561,8 @@ fun CameraScreen(
                                     cameraController.requestBinding()
                                 }
                             },
-                            modifier = Modifier.size(76.dp),
-                            shape = CircleShape,
-                            containerColor = White,
-                            contentColor = SurfaceDark
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(60.dp)
-                                    .border(3.dp, SurfaceDark, CircleShape)
-                                    .background(Color.Transparent, CircleShape)
-                            )
-                        }
+                            modifier = Modifier.size(76.dp)
+                        )
                     }
                 }
 
@@ -721,52 +723,245 @@ private data class GuidanceCue(
 )
 
 @Composable
-private fun ScoreBadge(
+private fun ArcScoreGauge(
     score: Int,
     color: Color,
     modifier: Modifier = Modifier,
 ) {
+    val clamped = score.coerceIn(0, 100)
     Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = Color.Black.copy(alpha = 0.36f),
-        contentColor = White,
-        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.7f))
+        modifier = modifier.size(width = 78.dp, height = 58.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = Color.Black.copy(alpha = 0.34f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, White.copy(alpha = 0.10f))
     ) {
-        Text(
-            text = score.coerceIn(0, 100).toString(),
-            style = MaterialTheme.typography.labelLarge,
-            color = White,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(modifier = Modifier.size(width = 70.dp, height = 45.dp)) {
+                val stroke = 5.dp.toPx()
+                val arcSize = Size(size.width - stroke, (size.width - stroke))
+                val topLeft = Offset(stroke / 2f, 10.dp.toPx())
+                drawArc(
+                    color = White.copy(alpha = 0.18f),
+                    startAngle = 180f,
+                    sweepAngle = 180f,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+                drawArc(
+                    color = color,
+                    startAngle = 180f,
+                    sweepAngle = 180f * clamped / 100f,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+            }
+            Column(
+                modifier = Modifier.padding(top = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = clamped.toString(),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = White
+                )
+                Text(
+                    text = "构图/曝光/色彩",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = White.copy(alpha = 0.56f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SlideUpSuggestionPanel(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    activeSuggestion: Suggestion,
+    suggestions: List<Suggestion>,
+    score: Int?,
+    scene: Scene?,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val panelHeight by animateDpAsState(
+        targetValue = if (expanded) 252.dp else 54.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "suggestionPanelHeight"
+    )
+    val currentText = chineseSuggestionText(activeSuggestion.text)
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(panelHeight)
+            .pointerInput(Unit) {
+                detectVerticalDragGestures { _, dragAmount ->
+                    if (dragAmount < -6f) onExpandedChange(true)
+                    if (dragAmount > 6f) onExpandedChange(false)
+                }
+            }
+            .clickable { onExpandedChange(!expanded) },
+        shape = RoundedCornerShape(24.dp),
+        color = Color.Black.copy(alpha = 0.50f),
+        contentColor = White,
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.32f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(36.dp)
+                    .height(4.dp)
+                    .background(White.copy(alpha = 0.36f), RoundedCornerShape(999.dp))
+            )
+            Spacer(Modifier.height(7.dp))
+            Crossfade(
+                targetState = currentText,
+                animationSpec = tween(360),
+                label = "panelSuggestionFade"
+            ) { text ->
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = White.copy(alpha = 0.94f),
+                    maxLines = if (expanded) 2 else 1
+                )
+            }
+            if (expanded) {
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AnalysisMetric("总分", score?.coerceIn(0, 100)?.toString() ?: "--", color)
+                    AnalysisMetric("场景", sceneLabel(scene), AccentBlue)
+                    AnalysisMetric("建议", suggestions.size.toString(), ScoreGood)
+                }
+                Spacer(Modifier.height(14.dp))
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    suggestions.take(4).forEachIndexed { index, suggestion ->
+                        Row(verticalAlignment = Alignment.Top) {
+                            Text(
+                                text = "${index + 1}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = color,
+                                modifier = Modifier.width(22.dp)
+                            )
+                            Text(
+                                text = chineseSuggestionText(suggestion.text),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = White.copy(alpha = 0.82f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalysisMetric(label: String, value: String, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text = value, style = MaterialTheme.typography.titleSmall, color = color)
+        Text(text = label, style = MaterialTheme.typography.labelSmall, color = White.copy(alpha = 0.52f))
+    }
+}
+
+private fun sceneLabel(scene: Scene?): String = when (scene) {
+    Scene.PORTRAIT -> "人像"
+    Scene.FOOD -> "美食"
+    Scene.LANDSCAPE -> "风景"
+    Scene.ARCHITECTURE -> "建筑"
+    Scene.STREET -> "街拍"
+    Scene.PRODUCT -> "产品"
+    Scene.GENERIC -> "通用"
+    null -> "--"
+}
+
+@Composable
+private fun PressableCircleButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    background: Color = SurfaceDark.copy(alpha = 0.68f),
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.92f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "buttonPress"
+    )
+    Surface(
+        modifier = modifier.graphicsLayer(scaleX = scale, scaleY = scale),
+        shape = CircleShape,
+        color = background,
+        contentColor = White,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    enabled = enabled,
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick
+                ),
+            contentAlignment = Alignment.Center,
+            content = content
         )
     }
 }
 
 @Composable
-private fun MinimalSuggestionLabel(
-    suggestion: Suggestion,
-    color: Color,
+private fun PressableShutterButton(
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Crossfade(
-        targetState = chineseSuggestionText(suggestion.text),
-        animationSpec = tween(durationMillis = 420),
-        label = "suggestionFade",
-        modifier = modifier,
-    ) { text ->
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = Color.Black.copy(alpha = 0.42f),
-            contentColor = White,
-            border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.48f))
-        ) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodySmall,
-                color = White.copy(alpha = 0.92f),
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-            )
-        }
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.93f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "shutterPress"
+    )
+    Box(
+        modifier = modifier
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clip(CircleShape)
+            .background(White, CircleShape)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(60.dp)
+                .border(3.dp, SurfaceDark, CircleShape)
+                .background(Color.Transparent, CircleShape)
+        )
     }
 }
 
@@ -846,20 +1041,32 @@ private fun DrawScope.drawGuidanceArrow(
 
     when (direction) {
         "left" -> {
-            drawLine(arrowColor, Offset(x + length / 2, y), Offset(x - length / 2, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x - length / 2, y), "left", arrowColor, arrowStrokeWidth)
+            val start = Offset(x + length / 2, y)
+            val end = Offset(x - length / 2, y)
+            drawLine(arrowColor, start, end, strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(end, "left", arrowColor, arrowStrokeWidth)
+            drawParticleTrail(start, end, arrowColor, alpha)
         }
         "right" -> {
-            drawLine(arrowColor, Offset(x - length / 2, y), Offset(x + length / 2, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x + length / 2, y), "right", arrowColor, arrowStrokeWidth)
+            val start = Offset(x - length / 2, y)
+            val end = Offset(x + length / 2, y)
+            drawLine(arrowColor, start, end, strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(end, "right", arrowColor, arrowStrokeWidth)
+            drawParticleTrail(start, end, arrowColor, alpha)
         }
         "up" -> {
-            drawLine(arrowColor, Offset(x, y + length / 2), Offset(x, y - length / 2), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x, y - length / 2), "up", arrowColor, arrowStrokeWidth)
+            val start = Offset(x, y + length / 2)
+            val end = Offset(x, y - length / 2)
+            drawLine(arrowColor, start, end, strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(end, "up", arrowColor, arrowStrokeWidth)
+            drawParticleTrail(start, end, arrowColor, alpha)
         }
         "down" -> {
-            drawLine(arrowColor, Offset(x, y - length / 2), Offset(x, y + length / 2), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x, y + length / 2), "down", arrowColor, arrowStrokeWidth)
+            val start = Offset(x, y - length / 2)
+            val end = Offset(x, y + length / 2)
+            drawLine(arrowColor, start, end, strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(end, "down", arrowColor, arrowStrokeWidth)
+            drawParticleTrail(start, end, arrowColor, alpha)
         }
         "rotate_cw", "rotate_ccw" -> {
             val sweep = if (direction == "rotate_cw") 230f else -230f
@@ -875,15 +1082,45 @@ private fun DrawScope.drawGuidanceArrow(
             val tipAngle = if (direction == "rotate_cw") 90f else -90f
             val tip = Offset(x + length * 0.36f, y + if (direction == "rotate_cw") length * 0.28f else -length * 0.28f)
             drawRotationTip(tip, tipAngle, arrowColor, arrowStrokeWidth)
+            drawRotationParticles(Offset(x, y), length / 2f, direction == "rotate_cw", arrowColor, alpha)
         }
         "zoom_in" -> {
             drawCircle(arrowColor, radius = length * 0.28f, center = Offset(x, y), style = Stroke(width = arrowStrokeWidth))
             drawLine(arrowColor, Offset(x + length * 0.18f, y + length * 0.18f), Offset(x + length * 0.48f, y + length * 0.48f), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
             drawLine(arrowColor, Offset(x - length * 0.16f, y), Offset(x + length * 0.16f, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
             drawLine(arrowColor, Offset(x, y - length * 0.16f), Offset(x, y + length * 0.16f), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawCircle(arrowColor.copy(alpha = alpha * 0.45f), radius = length * 0.42f, center = Offset(x, y), style = Stroke(width = 1.dp.toPx()))
+            drawCircle(arrowColor.copy(alpha = alpha * 0.26f), radius = length * 0.56f, center = Offset(x, y), style = Stroke(width = 1.dp.toPx()))
         }
     }
     drawGuidanceLabel(label, x, y - length * 0.68f, arrowColor)
+}
+
+private fun DrawScope.drawParticleTrail(start: Offset, end: Offset, color: Color, alpha: Float) {
+    val dx = end.x - start.x
+    val dy = end.y - start.y
+    listOf(0.38f, 0.56f, 0.74f).forEachIndexed { index, t ->
+        drawCircle(
+            color = color.copy(alpha = alpha * (0.28f - index * 0.06f)),
+            radius = (3.8f - index * 0.6f).dp.toPx(),
+            center = Offset(start.x + dx * t, start.y + dy * t)
+        )
+    }
+}
+
+private fun DrawScope.drawRotationParticles(center: Offset, radius: Float, clockwise: Boolean, color: Color, alpha: Float) {
+    val angles = if (clockwise) listOf(220f, 255f, 290f) else listOf(-40f, -75f, -110f)
+    angles.forEachIndexed { index, degrees ->
+        val rad = degrees / 180f * PI.toFloat()
+        drawCircle(
+            color = color.copy(alpha = alpha * (0.26f - index * 0.05f)),
+            radius = (3.8f - index * 0.5f).dp.toPx(),
+            center = Offset(
+                x = center.x + cos(rad) * radius * 0.82f,
+                y = center.y + sin(rad) * radius * 0.82f
+            )
+        )
+    }
 }
 
 private fun DrawScope.drawArrowHead(tip: Offset, direction: String, color: Color, strokeWidth: Float) {
@@ -980,21 +1217,57 @@ private fun ZoomSlider(
 ) {
     val upper = maxZoom.coerceAtLeast(1f)
     if (upper <= 1.01f) return
+    val haptics = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    var boundaryBuzzed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 1.08f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "zoomSpring"
+    )
 
     Surface(
         modifier = modifier
             .height(240.dp)
-            .width(48.dp),
+            .width(56.dp)
+            .graphicsLayer(scaleX = scale, scaleY = scale),
         shape = RoundedCornerShape(24.dp),
         color = SurfaceDark.copy(alpha = 0.38f),
         contentColor = White,
     ) {
         Box(contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = Color.Black.copy(alpha = 0.48f),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 10.dp)
+            ) {
+                Text(
+                    text = "${String.format("%.1f", zoomRatio.coerceIn(1f, upper))}x",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = White,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
             Slider(
                 value = zoomRatio.coerceIn(1f, upper),
-                onValueChange = onZoomChange,
+                onValueChange = { value ->
+                    val clamped = value.coerceIn(1f, upper)
+                    if (clamped <= 1.02f && !boundaryBuzzed) {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        boundaryBuzzed = true
+                    }
+                    if (clamped > 1.06f) boundaryBuzzed = false
+                    onZoomChange(clamped)
+                },
                 valueRange = 1f..upper,
                 enabled = enabled,
+                interactionSource = interactionSource,
                 modifier = Modifier
                     .width(218.dp)
                     .rotate(-90f),
