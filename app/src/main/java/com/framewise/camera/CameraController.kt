@@ -140,8 +140,11 @@ class CameraController(
      * @param onPhotoSaved called on the main thread with the content [Uri].
      */
     fun takePhoto(onPhotoSaved: (Uri) -> Unit) {
+        Log.d(TAG, "takePhoto invoked: imageCapture=${if (imageCapture == null) "null" else "ready"}, " +
+                "cameraReady=${_state.value.isReady}")
         val capture = imageCapture ?: run {
-            Log.w(TAG, "ImageCapture not ready")
+            Log.e(TAG, "Cannot take photo: imageCapture is null — camera not bound yet")
+            _state.value = _state.value.copy(error = "Camera not ready — try again in a moment")
             return
         }
 

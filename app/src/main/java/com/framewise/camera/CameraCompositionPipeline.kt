@@ -45,6 +45,14 @@ class CameraCompositionPipeline(
     private val _compositionResult = MutableStateFlow<CompositionResult?>(null)
     val compositionResult: StateFlow<CompositionResult?> = _compositionResult.asStateFlow()
 
+    /**
+     * The most recent raw [PhotoAnalysis]. The UI overlay observes this to draw
+     * the detected horizon and subject boxes (the [compositionResult] only
+     * carries scores + suggestions).
+     */
+    private val _photoAnalysis = MutableStateFlow<PhotoAnalysis?>(null)
+    val photoAnalysis: StateFlow<PhotoAnalysis?> = _photoAnalysis.asStateFlow()
+
     /** Number of frames analysed since start. */
     private var frameCount = 0
 
@@ -65,6 +73,7 @@ class CameraCompositionPipeline(
     fun detach() {
         frameAnalyzer.onAnalysisReady = null
         _compositionResult.value = null
+        _photoAnalysis.value = null
         Log.d(TAG, "Pipeline detached")
     }
 
@@ -88,17 +97,21 @@ class CameraCompositionPipeline(
                     "subjects=${analysis.subjects.size}, horizon=${analysis.horizon.detected}")
         }
 
+        // Expose the raw analysis for the overlay (horizon line, subject boxes).
+        _photoAnalysis.value = analysis
+
         val startNs = System.nanoTime()
 
         // Run the complete composition evaluation.
         val results = compositionEngine.evaluate(analysis)
-        val overallScore = compositionEngine.getOverallScore(results)
+        // Engine scores are normalized to [0, 1]; the UI gauge expects 0–100.
+        val overallScore = compositionEngine.getOverallScore(results) * 100.0
         val topSuggestions = compositionEngine.getTopSuggestions(analysis, count = 3)
 
         val elapsed = (System.nanoTime() - startNs) / 1_000_000.0
         if (frameCount % 30 == 0) {
             Log.d(TAG, "Evaluation took ${"%.1f".format(elapsed)} ms, " +
-                    "score=${"%.3f".format(overallScore)}")
+                    "score=${"%.1f".format(overallScore)}, suggestions=${topSuggestions.size}")
         }
 
         _compositionResult.value = CompositionResult(

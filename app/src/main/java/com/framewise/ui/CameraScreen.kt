@@ -24,12 +24,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.framewise.camera.CameraCompositionPipeline
 import com.framewise.camera.CameraController
 import com.framewise.camera.FrameAnalyzer
-import com.framewise.engine.types.CompositionResult
-import com.framewise.engine.types.PhotoAnalysis
+import com.framewise.engine.PhotoCompositionEngine
+import com.framewise.engine.rules.ALL_RULES
 import com.framewise.engine.types.SuggestionType
 import com.framewise.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 @Composable
@@ -40,60 +42,18 @@ fun CameraScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Observe local mock composition state for UI display
-    var photoAnalysis by remember { mutableStateOf<PhotoAnalysis?>(null) }
-    var compositionResult by remember { mutableStateOf<CompositionResult?>(null) }
-
-    val frameAnalyzer = remember {
-        FrameAnalyzer().apply {
-            onAnalysisReady = { analysis ->
-                photoAnalysis = analysis
-                // Simulate composition logic mapping to CompositionResult
-                val score = when {
-                    analysis.horizon.detected && abs(analysis.horizon.angle) > 5 -> 65.0
-                    analysis.brightness.backlit -> 50.0
-                    else -> 88.0
-                }
-                val suggestions = mutableListOf<com.framewise.engine.types.Suggestion>()
-                if (analysis.horizon.detected && abs(analysis.horizon.angle) > 3) {
-                    suggestions.add(
-                        com.framewise.engine.types.Suggestion(
-                            com.framewise.engine.types.SuggestionType.ROTATE,
-                            "Level the horizon"
-                        )
-                    )
-                }
-                if (analysis.brightness.backlit) {
-                    suggestions.add(
-                        com.framewise.engine.types.Suggestion(
-                            com.framewise.engine.types.SuggestionType.ADJUST_EXPOSURE,
-                            "Fix backlit lighting"
-                        )
-                    )
-                }
-                if (analysis.subjects.isEmpty()) {
-                    suggestions.add(
-                        com.framewise.engine.types.Suggestion(
-                            com.framewise.engine.types.SuggestionType.MOVE_CAMERA,
-                            "Find a subject"
-                        )
-                    )
-                } else {
-                    suggestions.add(
-                        com.framewise.engine.types.Suggestion(
-                            com.framewise.engine.types.SuggestionType.INFO,
-                            "Composition looks good!"
-                        )
-                    )
-                }
-                compositionResult = CompositionResult(
-                    overallScore = score,
-                    bestSuggestions = suggestions.take(3),
-                    activeRules = emptyList()
-                )
-            }
-        }
+    // Real composition pipeline: FrameAnalyzer → PhotoCompositionEngine (13 rules) → result.
+    val frameAnalyzer = remember { FrameAnalyzer() }
+    val pipeline = remember {
+        CameraCompositionPipeline(
+            frameAnalyzer = frameAnalyzer,
+            compositionEngine = PhotoCompositionEngine(ALL_RULES),
+        ).also { it.attach() }
     }
+
+    // Observe the engine output and the raw analysis (used by the overlay).
+    val photoAnalysis by pipeline.photoAnalysis.collectAsState()
+    val compositionResult by pipeline.compositionResult.collectAsState()
 
     val previewView = remember {
         PreviewView(context).apply {
@@ -117,7 +77,23 @@ fun CameraScreen(
     DisposableEffect(lifecycleOwner) {
         cameraController.bindToLifecycle()
         onDispose {
+            pipeline.detach()
             frameAnalyzer.release()
+        }
+    }
+
+    // Issue 2 fallback: if no scene has been detected (null/empty analysis) for
+    // more than 2 seconds, prompt the user instead of showing a blank overlay.
+    val sceneEmpty = photoAnalysis.let { a ->
+        a == null || (a.subjects.isEmpty() && !a.horizon.detected && a.lines.isEmpty())
+    }
+    var showEmptyHint by remember { mutableStateOf(false) }
+    LaunchedEffect(sceneEmpty) {
+        if (sceneEmpty) {
+            delay(2000)
+            showEmptyHint = true
+        } else {
+            showEmptyHint = false
         }
     }
 
@@ -192,6 +168,25 @@ fun CameraScreen(
                     topLeft = Offset(boxX, boxY),
                     size = Size(boxW, boxH),
                     style = Stroke(width = 2.dp.toPx())
+                )
+            }
+        }
+
+        // C2. Empty-scene fallback hint (Issue 2)
+        if (showEmptyHint) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = SurfaceDark.copy(alpha = 0.8f),
+                contentColor = White,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(24.dp)
+            ) {
+                Text(
+                    text = "Point at a scene to get composition tips",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = White,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)
                 )
             }
         }
