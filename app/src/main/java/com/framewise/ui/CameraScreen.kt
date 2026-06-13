@@ -12,6 +12,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cached
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,6 +40,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -85,7 +88,6 @@ fun CameraScreen(
     val cameraNotReadyMsg = stringResource(R.string.camera_not_ready)
     val retryLabel = stringResource(R.string.retry)
     val shutterHint = stringResource(R.string.shutter_hint)
-    val scoreLabel = stringResource(R.string.score)
     val galleryLabel = stringResource(R.string.gallery_title)
     val settingsLabel = stringResource(R.string.settings_title)
 
@@ -124,6 +126,7 @@ fun CameraScreen(
     val cameraState by cameraController.state.collectAsState()
     var gridVisible by remember { mutableStateOf(true) }
     var showExampleOverlay by remember { mutableStateOf(false) }
+    var suggestionIndex by remember { mutableStateOf(0) }
 
     // Shutter flash: white overlay fades in then out over ~200ms on capture.
     val coroutineScope = rememberCoroutineScope()
@@ -172,15 +175,33 @@ fun CameraScreen(
 
     val overlayMessage = cameraStatus ?: if (showEmptyHint) pointHint else null
 
-    // Score-derived accent color shared by the gauge and the suggestion chips.
-    val scoreColor = compositionResult?.let { result ->
+    val guidanceColor = compositionResult?.let { result ->
         when {
             result.overallScore >= 85 -> ScorePerfect
             result.overallScore >= 70 -> ScoreGood
             else -> ScoreBad
         }
-    } ?: AccentBlue
+    } ?: ScoreGood
     val guidanceCues = remember(photoAnalysis) { buildGuidanceCues(photoAnalysis) }
+    val suggestions = sceneSpecificSuggestions(photoAnalysis?.scene)
+        .ifEmpty { compositionResult?.bestSuggestions.orEmpty() }
+        .takeIf { it.isNotEmpty() }
+        ?: listOf(Suggestion(SuggestionType.INFO, "对准场景获取建议"))
+    val pulseTransition = rememberInfiniteTransition(label = "guidancePulse")
+    val guidanceAlpha by pulseTransition.animateFloat(
+        initialValue = 0.42f,
+        targetValue = 0.88f,
+        animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing), RepeatMode.Reverse),
+        label = "guidanceAlpha"
+    )
+
+    LaunchedEffect(suggestions.size) {
+        suggestionIndex = 0
+        while (suggestions.size > 1) {
+            delay(3000)
+            suggestionIndex = (suggestionIndex + 1) % suggestions.size
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
         // 1. Full screen camera preview.
@@ -216,20 +237,12 @@ fun CameraScreen(
                     Offset(0f, height * 2f / 3f) to Offset(width, height * 2f / 3f),
                 )
                 lines.forEach { (start, end) ->
-                    // Glow pass.
                     drawLine(
-                        color = AccentBlue.copy(alpha = 0.18f),
+                        color = White.copy(alpha = 0.16f),
                         start = start,
                         end = end,
-                        strokeWidth = 6.dp.toPx(),
+                        strokeWidth = 1.dp.toPx(),
                         cap = StrokeCap.Round
-                    )
-                    // Crisp line.
-                    drawLine(
-                        color = TransparentGrid,
-                        start = start,
-                        end = end,
-                        strokeWidth = 1.5.dp.toPx()
                     )
                 }
             }
@@ -243,10 +256,11 @@ fun CameraScreen(
 
                     rotate(degrees = angle, pivot = Offset(width / 2f, horizonY)) {
                         drawLine(
-                            color = color.copy(alpha = 0.6f),
+                            color = color.copy(alpha = 0.54f),
                             start = Offset(width * 0.1f, horizonY),
                             end = Offset(width * 0.9f, horizonY),
-                            strokeWidth = 2.dp.toPx()
+                            strokeWidth = 1.dp.toPx(),
+                            cap = StrokeCap.Round
                         )
                     }
                 }
@@ -256,10 +270,10 @@ fun CameraScreen(
             photoAnalysis?.subjects?.forEach { subject ->
                 val box = subject.bounds
                 drawRect(
-                    color = AccentBlue.copy(alpha = 0.5f),
+                    color = guidanceColor.copy(alpha = 0.34f),
                     topLeft = Offset((box.x * width).toFloat(), (box.y * height).toFloat()),
                     size = Size((box.width * width).toFloat(), (box.height * height).toFloat()),
-                    style = Stroke(width = 2.dp.toPx())
+                    style = Stroke(width = 1.dp.toPx())
                 )
             }
 
@@ -268,7 +282,14 @@ fun CameraScreen(
             }
 
             guidanceCues.forEach { cue ->
-                drawGuidanceArrow(cue.direction, cue.x * width, cue.y * height, cue.text)
+                drawGuidanceArrow(
+                    direction = cue.direction,
+                    subjectX = cue.x * width,
+                    subjectY = cue.y * height,
+                    label = cue.text,
+                    color = guidanceColor,
+                    alpha = guidanceAlpha,
+                )
             }
         }
 
@@ -334,28 +355,28 @@ fun CameraScreen(
             )
         }
 
-        TextButton(
+        IconButton(
             onClick = { showExampleOverlay = !showExampleOverlay },
             modifier = Modifier
                 .statusBarsPadding()
                 .align(Alignment.TopStart)
                 .padding(start = 132.dp, top = 18.dp)
-                .height(44.dp)
+                .size(44.dp)
                 .zIndex(2f)
                 .background(
                     if (showExampleOverlay) AccentBlue.copy(alpha = 0.78f) else SurfaceDark.copy(alpha = 0.7f),
-                    RoundedCornerShape(22.dp)
+                    CircleShape
                 )
                 .border(
                     1.dp,
                     if (showExampleOverlay) White.copy(alpha = 0.65f) else White.copy(alpha = 0.12f),
-                    RoundedCornerShape(22.dp)
+                    CircleShape
                 )
         ) {
-            Text(
-                text = "示例",
-                color = White,
-                style = MaterialTheme.typography.labelMedium
+            Icon(
+                imageVector = Icons.Default.Visibility,
+                contentDescription = "显示参考",
+                tint = White.copy(alpha = if (showExampleOverlay) 1f else 0.72f)
             )
         }
 
@@ -376,65 +397,50 @@ fun CameraScreen(
             )
         }
 
-        // E. Redesign #1 — semicircular speedometer-style score gauge, top-center.
         compositionResult?.let { result ->
-            Box(
+            ScoreBadge(
+                score = result.overallScore.toInt(),
+                color = guidanceColor,
                 modifier = Modifier
                     .statusBarsPadding()
-                    .align(Alignment.TopCenter)
-                    .padding(top = 8.dp)
+                    .align(Alignment.TopEnd)
+                    .padding(top = 22.dp, end = 74.dp)
                     .zIndex(2f)
-            ) {
-                ScoreArcGauge(
-                    score = result.overallScore.toInt(),
-                    color = scoreColor,
-                    label = scoreLabel
-                )
-            }
+            )
         }
 
-        // F. Bottom panel — frosted glass card with suggestions + controls.
+        MinimalSuggestionLabel(
+            suggestion = suggestions[suggestionIndex.coerceIn(0, suggestions.lastIndex)],
+            color = guidanceColor,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 122.dp)
+                .zIndex(2.2f)
+        )
+
         Surface(
-            color = SurfaceDark.copy(alpha = 0.55f),
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = SurfaceDark.copy(alpha = 0.48f),
+            shape = RoundedCornerShape(28.dp),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 14.dp, top = 0.dp, end = 14.dp, bottom = 14.dp)
                 .zIndex(2f)
                 .border(
-                    width = 1.dp,
-                    color = White.copy(alpha = 0.08f),
-                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+                    width = 0.8.dp,
+                    color = White.copy(alpha = 0.10f),
+                    shape = RoundedCornerShape(28.dp)
                 )
         ) {
             Column(
                 modifier = Modifier
-                    .navigationBarsPadding()
                     .fillMaxWidth()
-                    .padding(top = 16.dp, bottom = 20.dp),
+                    .padding(top = 10.dp, bottom = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Suggestion chips (real or demo fallback), bordered by score color.
-                val suggestions = sceneSpecificSuggestions(photoAnalysis?.scene)
-                    .ifEmpty { compositionResult?.bestSuggestions.orEmpty() }
-                    .takeIf { it.isNotEmpty() }
-                    ?: listOf(
-                        Suggestion(SuggestionType.INFO, "对准场景获取建议"),
-                        Suggestion(SuggestionType.MOVE_CAMERA, "将主体移到三分线交点"),
-                        Suggestion(SuggestionType.CHANGE_ANGLE, "换个角度寻找侧光"),
-                    )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
-                ) {
-                    suggestions.forEach { suggestion ->
-                        SuggestionChip(suggestion = suggestion, borderColor = scoreColor)
-                    }
-                }
-
                 FilterSelector(
                     selectedFilter = cameraController.filterMode,
                     onFilterSelected = cameraController::selectFilterMode,
@@ -561,7 +567,7 @@ fun CameraScreen(
                 Text(
                     text = if (cameraController.timerSeconds > 0) "${cameraController.timerSeconds}秒定时" else shutterHint,
                     style = MaterialTheme.typography.labelSmall,
-                    color = White.copy(alpha = 0.6f)
+                    color = White.copy(alpha = 0.48f)
                 )
             }
         }
@@ -714,6 +720,56 @@ private data class GuidanceCue(
     val text: String,
 )
 
+@Composable
+private fun ScoreBadge(
+    score: Int,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = Color.Black.copy(alpha = 0.36f),
+        contentColor = White,
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.7f))
+    ) {
+        Text(
+            text = score.coerceIn(0, 100).toString(),
+            style = MaterialTheme.typography.labelLarge,
+            color = White,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+        )
+    }
+}
+
+@Composable
+private fun MinimalSuggestionLabel(
+    suggestion: Suggestion,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Crossfade(
+        targetState = chineseSuggestionText(suggestion.text),
+        animationSpec = tween(durationMillis = 420),
+        label = "suggestionFade",
+        modifier = modifier,
+    ) { text ->
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = Color.Black.copy(alpha = 0.42f),
+            contentColor = White,
+            border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.48f))
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = White.copy(alpha = 0.92f),
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+            )
+        }
+    }
+}
+
 private fun buildGuidanceCues(analysis: PhotoAnalysis?): List<GuidanceCue> {
     if (analysis == null) return emptyList()
     val cues = mutableListOf<GuidanceCue>()
@@ -774,9 +830,16 @@ private fun sceneSpecificSuggestions(scene: Scene?): List<Suggestion> = when (sc
     else -> emptyList()
 }
 
-private fun DrawScope.drawGuidanceArrow(direction: String, subjectX: Float, subjectY: Float, label: String) {
-    val arrowColor = Color(0xFF44D17A)
-    val arrowStrokeWidth = 8f
+private fun DrawScope.drawGuidanceArrow(
+    direction: String,
+    subjectX: Float,
+    subjectY: Float,
+    label: String,
+    color: Color,
+    alpha: Float,
+) {
+    val arrowColor = color.copy(alpha = alpha)
+    val arrowStrokeWidth = 2.dp.toPx()
     val length = min(size.width, size.height) * 0.12f
     val x = subjectX.coerceIn(64f, size.width - 64f)
     val y = subjectY.coerceIn(96f, size.height - 220f)
@@ -784,19 +847,19 @@ private fun DrawScope.drawGuidanceArrow(direction: String, subjectX: Float, subj
     when (direction) {
         "left" -> {
             drawLine(arrowColor, Offset(x + length / 2, y), Offset(x - length / 2, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x - length / 2, y), "left", arrowColor)
+            drawArrowHead(Offset(x - length / 2, y), "left", arrowColor, arrowStrokeWidth)
         }
         "right" -> {
             drawLine(arrowColor, Offset(x - length / 2, y), Offset(x + length / 2, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x + length / 2, y), "right", arrowColor)
+            drawArrowHead(Offset(x + length / 2, y), "right", arrowColor, arrowStrokeWidth)
         }
         "up" -> {
             drawLine(arrowColor, Offset(x, y + length / 2), Offset(x, y - length / 2), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x, y - length / 2), "up", arrowColor)
+            drawArrowHead(Offset(x, y - length / 2), "up", arrowColor, arrowStrokeWidth)
         }
         "down" -> {
             drawLine(arrowColor, Offset(x, y - length / 2), Offset(x, y + length / 2), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawArrowHead(Offset(x, y + length / 2), "down", arrowColor)
+            drawArrowHead(Offset(x, y + length / 2), "down", arrowColor, arrowStrokeWidth)
         }
         "rotate_cw", "rotate_ccw" -> {
             val sweep = if (direction == "rotate_cw") 230f else -230f
@@ -809,81 +872,97 @@ private fun DrawScope.drawGuidanceArrow(direction: String, subjectX: Float, subj
                 size = Size(length, length),
                 style = Stroke(width = arrowStrokeWidth, cap = StrokeCap.Round),
             )
+            val tipAngle = if (direction == "rotate_cw") 90f else -90f
+            val tip = Offset(x + length * 0.36f, y + if (direction == "rotate_cw") length * 0.28f else -length * 0.28f)
+            drawRotationTip(tip, tipAngle, arrowColor, arrowStrokeWidth)
         }
         "zoom_in" -> {
-            drawCircle(arrowColor, radius = length * 0.28f, center = Offset(x, y), style = Stroke(width = 7f))
+            drawCircle(arrowColor, radius = length * 0.28f, center = Offset(x, y), style = Stroke(width = arrowStrokeWidth))
             drawLine(arrowColor, Offset(x + length * 0.18f, y + length * 0.18f), Offset(x + length * 0.48f, y + length * 0.48f), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
-            drawLine(arrowColor, Offset(x - length * 0.16f, y), Offset(x + length * 0.16f, y), strokeWidth = 5f, cap = StrokeCap.Round)
-            drawLine(arrowColor, Offset(x, y - length * 0.16f), Offset(x, y + length * 0.16f), strokeWidth = 5f, cap = StrokeCap.Round)
+            drawLine(arrowColor, Offset(x - length * 0.16f, y), Offset(x + length * 0.16f, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawLine(arrowColor, Offset(x, y - length * 0.16f), Offset(x, y + length * 0.16f), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
         }
     }
-    drawGuidanceLabel(label, x, y - length * 0.68f)
+    drawGuidanceLabel(label, x, y - length * 0.68f, arrowColor)
 }
 
-private fun DrawScope.drawArrowHead(tip: Offset, direction: String, color: Color) {
-    val size = 22f
-    val path = Path()
+private fun DrawScope.drawArrowHead(tip: Offset, direction: String, color: Color, strokeWidth: Float) {
+    val size = 10.dp.toPx()
+    val p1: Offset
+    val p2: Offset
     when (direction) {
         "left" -> {
-            path.moveTo(tip.x, tip.y)
-            path.lineTo(tip.x + size, tip.y - size * 0.7f)
-            path.lineTo(tip.x + size, tip.y + size * 0.7f)
+            p1 = Offset(tip.x + size, tip.y - size * 0.62f)
+            p2 = Offset(tip.x + size, tip.y + size * 0.62f)
         }
         "right" -> {
-            path.moveTo(tip.x, tip.y)
-            path.lineTo(tip.x - size, tip.y - size * 0.7f)
-            path.lineTo(tip.x - size, tip.y + size * 0.7f)
+            p1 = Offset(tip.x - size, tip.y - size * 0.62f)
+            p2 = Offset(tip.x - size, tip.y + size * 0.62f)
         }
         "up" -> {
-            path.moveTo(tip.x, tip.y)
-            path.lineTo(tip.x - size * 0.7f, tip.y + size)
-            path.lineTo(tip.x + size * 0.7f, tip.y + size)
+            p1 = Offset(tip.x - size * 0.62f, tip.y + size)
+            p2 = Offset(tip.x + size * 0.62f, tip.y + size)
         }
-        "down" -> {
-            path.moveTo(tip.x, tip.y)
-            path.lineTo(tip.x - size * 0.7f, tip.y - size)
-            path.lineTo(tip.x + size * 0.7f, tip.y - size)
+        else -> {
+            p1 = Offset(tip.x - size * 0.62f, tip.y - size)
+            p2 = Offset(tip.x + size * 0.62f, tip.y - size)
         }
     }
-    path.close()
-    drawPath(path, color)
+    drawLine(color, tip, p1, strokeWidth = strokeWidth, cap = StrokeCap.Round)
+    drawLine(color, tip, p2, strokeWidth = strokeWidth, cap = StrokeCap.Round)
 }
 
-private fun DrawScope.drawGuidanceLabel(text: String, x: Float, y: Float) {
+private fun DrawScope.drawRotationTip(tip: Offset, angle: Float, color: Color, strokeWidth: Float) {
+    val size = 10.dp.toPx()
+    rotate(angle, pivot = tip) {
+        drawLine(color, tip, Offset(tip.x - size, tip.y - size * 0.55f), strokeWidth = strokeWidth, cap = StrokeCap.Round)
+        drawLine(color, tip, Offset(tip.x - size, tip.y + size * 0.55f), strokeWidth = strokeWidth, cap = StrokeCap.Round)
+    }
+}
+
+private fun DrawScope.drawGuidanceLabel(text: String, x: Float, y: Float, color: Color) {
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = android.graphics.Color.WHITE
-        textSize = 38f
+        this.color = android.graphics.Color.WHITE
+        textSize = 28f
         textAlign = Paint.Align.CENTER
     }
     val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = android.graphics.Color.argb(178, 20, 28, 24)
+        this.color = android.graphics.Color.argb((100 * color.alpha).toInt().coerceIn(56, 120), 14, 18, 22)
     }
     val width = paint.measureText(text) + 34f
     val left = (x - width / 2).coerceIn(12f, size.width - width - 12f)
     val top = y.coerceIn(80f, size.height - 280f)
-    drawContext.canvas.nativeCanvas.drawRoundRect(left, top, left + width, top + 52f, 26f, 26f, bgPaint)
-    drawContext.canvas.nativeCanvas.drawText(text, left + width / 2, top + 37f, paint)
+    drawContext.canvas.nativeCanvas.drawRoundRect(left, top, left + width, top + 40f, 20f, 20f, bgPaint)
+    drawContext.canvas.nativeCanvas.drawText(text, left + width / 2, top + 28f, paint)
 }
 
 private fun DrawScope.drawExampleOverlay(scene: Scene, width: Float, height: Float) {
-    val guide = Color(0xFF44D17A).copy(alpha = 0.36f)
-    val fill = Color.White.copy(alpha = 0.12f)
-    drawLine(guide, Offset(width / 3f, 0f), Offset(width / 3f, height), strokeWidth = 3f)
-    drawLine(guide, Offset(width * 2f / 3f, 0f), Offset(width * 2f / 3f, height), strokeWidth = 3f)
-    drawLine(guide, Offset(0f, height / 3f), Offset(width, height / 3f), strokeWidth = 3f)
-    drawLine(guide, Offset(0f, height * 2f / 3f), Offset(width, height * 2f / 3f), strokeWidth = 3f)
+    val guide = ScorePerfect.copy(alpha = 0.34f)
+    val fill = Color.White.copy(alpha = 0.08f)
+    val dash = PathEffect.dashPathEffect(floatArrayOf(18f, 14f), 0f)
+    drawLine(guide, Offset(width / 3f, 0f), Offset(width / 3f, height), strokeWidth = 1.2.dp.toPx(), pathEffect = dash)
+    drawLine(guide, Offset(width * 2f / 3f, 0f), Offset(width * 2f / 3f, height), strokeWidth = 1.2.dp.toPx(), pathEffect = dash)
+    drawLine(guide, Offset(0f, height / 3f), Offset(width, height / 3f), strokeWidth = 1.2.dp.toPx(), pathEffect = dash)
+    drawLine(guide, Offset(0f, height * 2f / 3f), Offset(width, height * 2f / 3f), strokeWidth = 1.2.dp.toPx(), pathEffect = dash)
     when (scene) {
         Scene.PORTRAIT -> {
-            drawOval(fill, topLeft = Offset(width * 0.28f, height * 0.19f), size = Size(width * 0.18f, height * 0.22f))
-            drawRect(fill, topLeft = Offset(width * 0.24f, height * 0.42f), size = Size(width * 0.26f, height * 0.34f))
+            drawOval(fill, topLeft = Offset(width * 0.39f, height * 0.18f), size = Size(width * 0.22f, height * 0.18f))
+            drawRoundRect(fill, topLeft = Offset(width * 0.34f, height * 0.38f), size = Size(width * 0.32f, height * 0.36f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(32f, 32f))
+            drawLine(guide, Offset(width * 0.32f, height * 0.30f), Offset(width * 0.68f, height * 0.30f), strokeWidth = 1.5.dp.toPx(), pathEffect = dash)
         }
         Scene.FOOD -> {
             drawCircle(fill, radius = width * 0.16f, center = Offset(width * 0.58f, height * 0.50f))
-            drawLine(guide, Offset(width * 0.22f, height * 0.82f), Offset(width * 0.78f, height * 0.22f), strokeWidth = 5f)
+            drawLine(guide, Offset(width * 0.18f, height * 0.78f), Offset(width * 0.82f, height * 0.24f), strokeWidth = 1.6.dp.toPx(), pathEffect = dash)
+            drawLine(guide, Offset(width * 0.26f, height * 0.84f), Offset(width * 0.88f, height * 0.32f), strokeWidth = 1.dp.toPx(), pathEffect = dash)
         }
         Scene.LANDSCAPE -> {
-            drawLine(guide, Offset(0f, height / 3f), Offset(width, height / 3f), strokeWidth = 7f)
+            drawLine(guide, Offset(0f, height / 3f), Offset(width, height / 3f), strokeWidth = 2.dp.toPx(), pathEffect = dash)
             drawRect(fill, topLeft = Offset(width * 0.08f, height * 0.62f), size = Size(width * 0.84f, height * 0.18f))
+        }
+        Scene.ARCHITECTURE -> {
+            drawLine(guide, Offset(width * 0.42f, height * 0.14f), Offset(width * 0.42f, height * 0.82f), strokeWidth = 1.5.dp.toPx(), pathEffect = dash)
+            drawLine(guide, Offset(width * 0.58f, height * 0.14f), Offset(width * 0.58f, height * 0.82f), strokeWidth = 1.5.dp.toPx(), pathEffect = dash)
+            drawRect(fill, topLeft = Offset(width * 0.38f, height * 0.20f), size = Size(width * 0.24f, height * 0.56f))
         }
         else -> {
             drawRect(fill, topLeft = Offset(width * 0.33f, height * 0.22f), size = Size(width * 0.34f, height * 0.56f))
