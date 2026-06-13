@@ -19,11 +19,10 @@ adb logcat -s Framewise CompPipeline CameraX CameraController
 
 | Priority | Issue | Root Cause | Suggested Fix |
 |----------|-------|------------|---------------|
-| **P0** | Composition suggestions not showing | FrameAnalyzer yuvToBitmap likely fails → emptyAnalysis → no suggestions | Add device-specific YUV→Bitmap fix or use CameraX ImageProxy directly. On some devices YUV_420_888 format differs. |
-| **P0** | Settings not persisting | rememberSaveable is per-Screen, lost on navigation | Replace SettingsState singleton with DataStore/SharedPreferences |
-| **P1** | No photo capture feedback | takePhoto() callback is empty | Add Toast + shutter animation + thumbnail preview |
-| **P2** | Canvas overlay may not be visible on all devices | Z-ordering of AndroidView + Canvas in Box layout | Verify overlay layer renders above PreviewView |
-| **P2** | Gallery uses Coil but no permissions request | READ_MEDIA_IMAGES not requested | Add runtime permission for Android 13+ |
+| **P0** | FrameAnalyzer real analysis still not working | Real analyzer path still falls back to demo mode; on-device YUV/image analysis remains unreliable | Fix device-specific `ImageProxy` conversion and verify real `PhotoAnalysis` output before disabling demo fallback |
+| **P1** | Gallery permissions need verification | Gallery requests media permission in code, but Android version/device behavior should be tested | Confirm `READ_MEDIA_IMAGES` is requested on Android 13+ and legacy read permission works below Android 13 |
+| **P2** | Color filter only applies to preview overlay, not saved JPEG | Current preview uses a Compose overlay rather than a true CameraX/GL preview filter | Apply the same `ColorMatrix` to the saved JPEG or move filtering into a GL/CameraX pipeline |
+| **P3** | Timer countdown UI could be smoother | Countdown is functional but uses a static number overlay | Add easing/scale animation and cancel affordance during countdown |
 
 ### 4. Key Architecture Notes
 - **Engine is pure Kotlin, no Android deps**: `engine/` can be unit-tested on JVM

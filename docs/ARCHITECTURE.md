@@ -3,6 +3,18 @@
 ## Project Overview
 Real-time photo composition guide Android app. On-device ML + rule engine provides live composition suggestions through the camera viewfinder.
 
+## Features
+- Real-time composition advice (13 rules)
+- CameraX preview + capture
+- Zoom slider using `CameraControl.setZoomRatio`
+- Torch/flash toggle
+- Color filters with `ColorMatrix`: warm, cool, vintage, black & white
+- Capture timer with 3s / 10s countdown
+- Grid overlay toggle for rule-of-thirds lines
+- Settings persistence with `SharedPreferences`
+- Gallery backed by `MediaStore`
+- Demo mode fallback after 3s when real analysis fails
+
 ## Tech Stack
 - **Language**: Kotlin
 - **UI**: Jetpack Compose + Material3
@@ -29,7 +41,7 @@ Framewise/
             ├── MainActivity.kt           # Entry point, permission gate
             ├── SettingsState.kt          # Global settings singleton
             ├── camera/                   # Camera + analysis pipeline
-            │   ├── CameraController.kt       # CameraX lifecycle, preview, capture
+            │   ├── CameraController.kt       # CameraX lifecycle, capture, zoom, torch, filters, timer
             │   ├── FrameAnalyzer.kt          # YUV→Bitmap, subject/horizon/light detection
             │   ├── CameraCompositionPipeline.kt  # Connects analyzer → engine
             │   ├── ImageProcessor.kt            # Image processing helpers
@@ -53,7 +65,7 @@ Framewise/
             │       ├── Headroom.kt
             │       └── Exposure.kt
             └── ui/                       # UI screens
-                ├── CameraScreen.kt          # Main camera + overlay + controls
+                ├── CameraScreen.kt          # Main camera, overlays, filters, timer, capture controls
                 ├── SettingsScreen.kt         # Rule toggles
                 ├── GalleryScreen.kt          # Captured photos
                 ├── navigation/NavGraph.kt    # NavHost (Camera ↔ Settings ↔ Gallery)
@@ -85,8 +97,9 @@ CompositionResult (score + suggestions + activeRules)
   │
   ▼
 CameraScreen.kt observes via StateFlow → renders:
-  ├── Canvas overlay (rule of thirds grid, horizon line, subject boxes)
+  ├── Canvas overlay (toggleable rule of thirds grid, horizon line, subject boxes)
   ├── Score gauge (top-right circular indicator)
+  ├── Camera controls (zoom, torch, timer, filters)
   └── Suggestion chips (bottom, top 3 actionable tips)
 ```
 

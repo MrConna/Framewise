@@ -13,6 +13,29 @@
 
 ---
 
+### v0.1.6 (2026-06-13)
+- 🎨 Color filters: original, warm, cool, vintage, black & white
+- 📐 Grid overlay toggle (show/hide rule of thirds lines)
+- ⏱️ Capture timer: 3s / 10s countdown before photo
+
+### v0.1.5 (2026-06-13)
+- 🔍 Zoom slider (right edge of screen)
+- 🔦 Torch/flash toggle button
+- 🌐 Full Chinese UI (all strings localized)
+- 📱 VersionName synced to match git tag
+
+### v0.1.4 (2026-06-13)
+- Demo mode now produces varying data every 2s (score changes dynamically)
+- Scene rotates between landscape/portrait/food/architecture
+
+### v0.1.3 (2026-06-13)
+- 🌐 Full Chinese localization
+- 🖼️ Gallery fixed: MediaStore query now shows captured photos
+- 🎨 UI redesign: score semicircle, frosted glass bottom bar, pulse shutter animation
+- 💡 Demo Mode: 3s timeout fallback when real analysis fails
+
+---
+
 ## v0.1.1-alpha (2026-06-13)
 ### Fixed
 - **CameraScreen now uses real PhotoCompositionEngine** (was hardcoded mock logic)
