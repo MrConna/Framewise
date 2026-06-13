@@ -18,6 +18,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,8 +43,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import coil.compose.rememberAsyncImagePainter
 import com.framewise.R
 import com.framewise.SettingsState
@@ -174,13 +177,24 @@ fun CameraScreen(
         // 1. Full screen camera preview.
         AndroidView(
             factory = { previewView },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(0f)
+                .pointerInput(cameraController) {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        if (zoom != 1f) cameraController.updateZoom(zoom)
+                    }
+                }
         )
 
         FilterPreviewOverlay(filterMode = cameraController.filterMode)
 
         // 2. Compose Canvas overlay (grid + horizon + subject boxes).
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(0.2f)
+        ) {
             val width = size.width
             val height = size.height
 
@@ -250,6 +264,7 @@ fun CameraScreen(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .padding(24.dp)
+                    .zIndex(1f)
             ) {
                 Text(
                     text = message,
@@ -267,6 +282,7 @@ fun CameraScreen(
                 .statusBarsPadding()
                 .align(Alignment.TopStart)
                 .padding(16.dp)
+                .zIndex(2f)
                 .background(SurfaceDark.copy(alpha = 0.7f), CircleShape)
         ) {
             Icon(
@@ -283,6 +299,7 @@ fun CameraScreen(
                 .align(Alignment.TopStart)
                 .padding(start = 76.dp, top = 16.dp)
                 .size(48.dp)
+                .zIndex(2f)
                 .background(
                     if (gridVisible) AccentBlue.copy(alpha = 0.78f) else SurfaceDark.copy(alpha = 0.7f),
                     CircleShape
@@ -307,6 +324,7 @@ fun CameraScreen(
                 .statusBarsPadding()
                 .align(Alignment.TopEnd)
                 .padding(16.dp)
+                .zIndex(2f)
                 .background(SurfaceDark.copy(alpha = 0.7f), CircleShape)
         ) {
             Icon(
@@ -323,6 +341,7 @@ fun CameraScreen(
                     .statusBarsPadding()
                     .align(Alignment.TopCenter)
                     .padding(top = 8.dp)
+                    .zIndex(2f)
             ) {
                 ScoreArcGauge(
                     score = result.overallScore.toInt(),
@@ -339,6 +358,7 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .zIndex(2f)
                 .border(
                     width = 1.dp,
                     color = White.copy(alpha = 0.08f),
@@ -510,12 +530,14 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 10.dp)
+                .zIndex(2f)
         )
 
         if (cameraController.countdownSeconds > 0) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .zIndex(3f)
                     .background(Color.Black.copy(alpha = 0.24f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -532,6 +554,7 @@ fun CameraScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .zIndex(4f)
                     .background(Color.White.copy(alpha = flashAlpha.value))
             )
         }
@@ -542,7 +565,8 @@ fun CameraScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.TopCenter)
-                    .statusBarsPadding(),
+                    .statusBarsPadding()
+                    .zIndex(5f),
                 color = Color(0xFFD32F2F)
             ) {
                 Row(
@@ -576,6 +600,7 @@ private fun FilterPreviewOverlay(filterMode: String) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .zIndex(0.1f)
                 .background(color)
         )
     }
@@ -651,9 +676,9 @@ private fun ZoomSlider(
 
     Surface(
         modifier = modifier
-            .height(210.dp)
-            .width(34.dp),
-        shape = RoundedCornerShape(18.dp),
+            .height(240.dp)
+            .width(48.dp),
+        shape = RoundedCornerShape(24.dp),
         color = SurfaceDark.copy(alpha = 0.38f),
         contentColor = White,
     ) {
@@ -664,7 +689,7 @@ private fun ZoomSlider(
                 valueRange = 1f..upper,
                 enabled = enabled,
                 modifier = Modifier
-                    .width(190.dp)
+                    .width(218.dp)
                     .rotate(-90f),
                 colors = SliderDefaults.colors(
                     thumbColor = White.copy(alpha = 0.92f),
@@ -801,10 +826,25 @@ fun SuggestionChip(
             }
             Text(text = iconText)
             Text(
-                text = suggestion.text,
+                text = chineseSuggestionText(suggestion.text),
                 style = MaterialTheme.typography.bodySmall,
                 color = White
             )
         }
+    }
+}
+
+private fun chineseSuggestionText(text: String): String {
+    val normalized = text.lowercase()
+    return when {
+        "leading lines" in normalized || "roads" in normalized || "railings" in normalized -> "寻找引导线"
+        "rule of thirds" in normalized || "thirds" in normalized -> "试试三分法"
+        "different angle" in normalized || "adjust the camera" in normalized || "reposition" in normalized -> "换个角度"
+        "point" in normalized && "scene" in normalized -> "对准场景获取建议"
+        "exposure" in normalized || "overexposed" in normalized || "underexposed" in normalized -> "调整曝光"
+        "horizon" in normalized || "rotate" in normalized -> "校正水平线"
+        "symmetry" in normalized || "center" in normalized -> "调整主体位置"
+        "zoom" in normalized || "closer" in normalized -> "调整变焦"
+        else -> text
     }
 }

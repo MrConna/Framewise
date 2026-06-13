@@ -93,6 +93,8 @@ class CameraController(
 
     private val _state = MutableStateFlow(CameraState())
     val state: StateFlow<CameraState> = _state.asStateFlow()
+    private val _zoomState = MutableStateFlow(1f)
+    val zoomState: StateFlow<Float> = _zoomState.asStateFlow()
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
@@ -146,6 +148,7 @@ class CameraController(
         timerJob?.cancel()
         countdownSeconds = 0
         zoomRatio = 1f
+        _zoomState.value = 1f
         maxZoom = 1f
         isTorchOn = false
         _state.value = CameraState()
@@ -208,8 +211,13 @@ class CameraController(
     fun setZoom(ratio: Float) {
         val clamped = ratio.coerceIn(1f, maxZoom.coerceAtLeast(1f))
         zoomRatio = clamped
+        _zoomState.value = clamped
         _state.value = _state.value.copy(zoomRatio = clamped)
         camera?.cameraControl?.setZoomRatio(clamped)
+    }
+
+    fun updateZoom(delta: Float) {
+        setZoom(zoomRatio * delta)
     }
 
     fun toggleTorch() {
@@ -400,7 +408,14 @@ class CameraController(
             val zoomState = boundCamera?.cameraInfo?.zoomState?.value
             maxZoom = zoomState?.maxZoomRatio ?: 1f
             zoomRatio = (zoomState?.zoomRatio ?: zoomRatio).coerceIn(1f, maxZoom.coerceAtLeast(1f))
+            _zoomState.value = zoomRatio
             isTorchOn = false
+            boundCamera?.cameraInfo?.zoomState?.observe(lifecycleOwner) { state ->
+                maxZoom = state.maxZoomRatio
+                zoomRatio = state.zoomRatio.coerceIn(1f, maxZoom.coerceAtLeast(1f))
+                _zoomState.value = zoomRatio
+                _state.value = _state.value.copy(zoomRatio = zoomRatio)
+            }
 
             _state.value = CameraState(
                 isReady = true,
