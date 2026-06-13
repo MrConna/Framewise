@@ -16,7 +16,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -110,6 +112,7 @@ fun CameraScreen(
     }
 
     val cameraState by cameraController.state.collectAsState()
+    var gridVisible by remember { mutableStateOf(true) }
 
     // Shutter flash: white overlay fades in then out over ~200ms on capture.
     val coroutineScope = rememberCoroutineScope()
@@ -174,34 +177,38 @@ fun CameraScreen(
             modifier = Modifier.fillMaxSize()
         )
 
+        FilterPreviewOverlay(filterMode = cameraController.filterMode)
+
         // 2. Compose Canvas overlay (grid + horizon + subject boxes).
         Canvas(modifier = Modifier.fillMaxSize()) {
             val width = size.width
             val height = size.height
 
             // A. Rule-of-thirds grid with a soft glow (wide low-alpha pass first).
-            val lines = listOf(
-                Offset(width / 3f, 0f) to Offset(width / 3f, height),
-                Offset(width * 2f / 3f, 0f) to Offset(width * 2f / 3f, height),
-                Offset(0f, height / 3f) to Offset(width, height / 3f),
-                Offset(0f, height * 2f / 3f) to Offset(width, height * 2f / 3f),
-            )
-            lines.forEach { (start, end) ->
-                // Glow pass.
-                drawLine(
-                    color = AccentBlue.copy(alpha = 0.18f),
-                    start = start,
-                    end = end,
-                    strokeWidth = 6.dp.toPx(),
-                    cap = StrokeCap.Round
+            if (gridVisible) {
+                val lines = listOf(
+                    Offset(width / 3f, 0f) to Offset(width / 3f, height),
+                    Offset(width * 2f / 3f, 0f) to Offset(width * 2f / 3f, height),
+                    Offset(0f, height / 3f) to Offset(width, height / 3f),
+                    Offset(0f, height * 2f / 3f) to Offset(width, height * 2f / 3f),
                 )
-                // Crisp line.
-                drawLine(
-                    color = TransparentGrid,
-                    start = start,
-                    end = end,
-                    strokeWidth = 1.5.dp.toPx()
-                )
+                lines.forEach { (start, end) ->
+                    // Glow pass.
+                    drawLine(
+                        color = AccentBlue.copy(alpha = 0.18f),
+                        start = start,
+                        end = end,
+                        strokeWidth = 6.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                    // Crisp line.
+                    drawLine(
+                        color = TransparentGrid,
+                        start = start,
+                        end = end,
+                        strokeWidth = 1.5.dp.toPx()
+                    )
+                }
             }
 
             // B. Horizon level indicator.
@@ -266,6 +273,30 @@ fun CameraScreen(
                 imageVector = Icons.Default.Settings,
                 contentDescription = settingsLabel,
                 tint = White
+            )
+        }
+
+        IconButton(
+            onClick = { gridVisible = !gridVisible },
+            modifier = Modifier
+                .statusBarsPadding()
+                .align(Alignment.TopStart)
+                .padding(start = 76.dp, top = 16.dp)
+                .size(48.dp)
+                .background(
+                    if (gridVisible) AccentBlue.copy(alpha = 0.78f) else SurfaceDark.copy(alpha = 0.7f),
+                    CircleShape
+                )
+                .border(
+                    1.dp,
+                    if (gridVisible) White.copy(alpha = 0.65f) else White.copy(alpha = 0.12f),
+                    CircleShape
+                )
+        ) {
+            Text(
+                text = "格",
+                style = MaterialTheme.typography.labelLarge,
+                color = White
             )
         }
 
@@ -340,6 +371,12 @@ fun CameraScreen(
                     }
                 }
 
+                FilterSelector(
+                    selectedFilter = cameraController.filterMode,
+                    onFilterSelected = cameraController::selectFilterMode,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
                 // Control bar: recent-photo thumbnail / gallery + torch + shutter.
                 Box(
                     modifier = Modifier
@@ -396,6 +433,29 @@ fun CameraScreen(
                         )
                     }
 
+                    IconButton(
+                        onClick = { cameraController.cycleTimer() },
+                        enabled = cameraState.isReady,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(x = 74.dp)
+                            .size(54.dp)
+                            .background(
+                                if (cameraController.timerSeconds > 0) AccentBlue.copy(alpha = 0.85f) else SurfaceDark.copy(alpha = 0.7f),
+                                CircleShape,
+                            )
+                    ) {
+                        Text(
+                            text = when (cameraController.timerSeconds) {
+                                3 -> "3秒"
+                                10 -> "10"
+                                else -> "定"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            color = White
+                        )
+                    }
+
                     // Center: shutter with a pulsing focus ring while initializing.
                     Box(contentAlignment = Alignment.Center) {
                         if (!cameraState.isReady) {
@@ -404,15 +464,15 @@ fun CameraScreen(
                         LargeFloatingActionButton(
                             onClick = {
                                 if (cameraState.isReady) {
-                                    cameraController.takePhoto { uri ->
+                                    cameraController.captureWithTimer { uri ->
                                         val msg = photoSavedMsg
                                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                         SettingsState.capturedCount++
                                         lastPhotoUri = uri
-                                    }
-                                    coroutineScope.launch {
-                                        flashAlpha.animateTo(1f, tween(100))
-                                        flashAlpha.animateTo(0f, tween(100))
+                                        coroutineScope.launch {
+                                            flashAlpha.animateTo(1f, tween(100))
+                                            flashAlpha.animateTo(0f, tween(100))
+                                        }
                                     }
                                 } else {
                                     Toast.makeText(context, cameraNotReadyMsg, Toast.LENGTH_SHORT).show()
@@ -435,7 +495,7 @@ fun CameraScreen(
                 }
 
                 Text(
-                    text = shutterHint,
+                    text = if (cameraController.timerSeconds > 0) "${cameraController.timerSeconds}秒定时" else shutterHint,
                     style = MaterialTheme.typography.labelSmall,
                     color = White.copy(alpha = 0.6f)
                 )
@@ -451,6 +511,21 @@ fun CameraScreen(
                 .align(Alignment.CenterEnd)
                 .padding(end = 10.dp)
         )
+
+        if (cameraController.countdownSeconds > 0) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.24f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = cameraController.countdownSeconds.toString(),
+                    style = MaterialTheme.typography.displayLarge,
+                    color = White
+                )
+            }
+        }
 
         // Shutter flash overlay (above the controls).
         if (flashAlpha.value > 0f) {
@@ -487,6 +562,81 @@ fun CameraScreen(
         }
     }
 }
+
+@Composable
+private fun FilterPreviewOverlay(filterMode: String) {
+    val color = when (filterMode) {
+        "warm" -> Color(0xFFFFB36B).copy(alpha = 0.16f)
+        "cool" -> Color(0xFF6BB7FF).copy(alpha = 0.16f)
+        "vintage" -> Color(0xFFC49A63).copy(alpha = 0.18f)
+        "bw" -> Color.Black.copy(alpha = 0.18f)
+        else -> Color.Transparent
+    }
+    if (color.alpha > 0f) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(color)
+        )
+    }
+}
+
+@Composable
+private fun FilterSelector(
+    selectedFilter: String,
+    onFilterSelected: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val filters = listOf(
+        FilterOption("original", "原图", Color.White),
+        FilterOption("warm", "暖色", Color(0xFFFFB36B)),
+        FilterOption("cool", "冷色", Color(0xFF6BB7FF)),
+        FilterOption("vintage", "复古", Color(0xFFC49A63)),
+        FilterOption("bw", "黑白", Color(0xFFBDBDBD)),
+    )
+    Row(
+        modifier = modifier
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        filters.forEach { filter ->
+            val selected = filter.id == selectedFilter
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onFilterSelected(filter.id) }
+                    .border(
+                        width = if (selected) 2.dp else 1.dp,
+                        color = if (selected) AccentBlue else White.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    .padding(horizontal = 10.dp, vertical = 7.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(filter.color, CircleShape)
+                        .border(1.dp, White.copy(alpha = 0.5f), CircleShape)
+                )
+                Text(
+                    text = filter.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = White.copy(alpha = if (selected) 1f else 0.72f)
+                )
+            }
+        }
+    }
+}
+
+private data class FilterOption(
+    val id: String,
+    val label: String,
+    val color: Color,
+)
 
 @Composable
 private fun ZoomSlider(

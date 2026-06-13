@@ -1,6 +1,12 @@
 package com.framewise.camera
 
 import android.content.ContentValues
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
@@ -22,9 +28,15 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,6 +88,7 @@ class CameraController(
 
     companion object {
         private const val TAG = "CameraController"
+        val AVAILABLE_FILTERS = listOf("original", "warm", "cool", "vintage", "bw")
     }
 
     private val _state = MutableStateFlow(CameraState())
@@ -85,6 +98,8 @@ class CameraController(
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
     private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val timerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var timerJob: Job? = null
 
     var zoomRatio by mutableStateOf(1f)
         private set
@@ -93,6 +108,15 @@ class CameraController(
         private set
 
     var isTorchOn by mutableStateOf(false)
+        private set
+
+    var filterMode by mutableStateOf("original")
+        private set
+
+    var timerSeconds by mutableStateOf(0)
+        private set
+
+    var countdownSeconds by mutableStateOf(0)
         private set
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -119,6 +143,8 @@ class CameraController(
         cameraProvider?.unbindAll()
         camera = null
         imageCapture = null
+        timerJob?.cancel()
+        countdownSeconds = 0
         zoomRatio = 1f
         maxZoom = 1f
         isTorchOn = false
@@ -195,6 +221,81 @@ class CameraController(
         _state.value = _state.value.copy(isTorchOn = next)
     }
 
+    fun selectFilterMode(mode: String) {
+        if (mode in AVAILABLE_FILTERS) {
+            filterMode = mode
+        }
+    }
+
+    fun getColorMatrix(filter: String): ColorMatrix = when (filter) {
+        "warm" -> ColorMatrix(
+            floatArrayOf(
+                1.2f, 0.1f, 0f, 0f, 0f,
+                0.1f, 1f, 0f, 0f, 0f,
+                0f, 0f, 0.8f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        )
+        "cool" -> ColorMatrix(
+            floatArrayOf(
+                0.8f, 0f, 0.1f, 0f, 0f,
+                0f, 1f, 0.1f, 0f, 0f,
+                0.1f, 0f, 1.2f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        )
+        "vintage" -> ColorMatrix(
+            floatArrayOf(
+                1.1f, 0.1f, 0f, 0f, 0f,
+                0f, 0.9f, 0f, 0f, 0f,
+                0f, 0f, 0.7f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        )
+        "bw" -> ColorMatrix(
+            floatArrayOf(
+                0.33f, 0.33f, 0.33f, 0f, 0f,
+                0.33f, 0.33f, 0.33f, 0f, 0f,
+                0.33f, 0.33f, 0.33f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        )
+        else -> ColorMatrix()
+    }
+
+    fun updateTimerSeconds(seconds: Int) {
+        timerSeconds = when (seconds) {
+            3, 10 -> seconds
+            else -> 0
+        }
+    }
+
+    fun cycleTimer() {
+        timerSeconds = when (timerSeconds) {
+            0 -> 3
+            3 -> 10
+            else -> 0
+        }
+    }
+
+    fun captureWithTimer(onPhotoSaved: (Uri) -> Unit) {
+        timerJob?.cancel()
+        val seconds = timerSeconds
+        if (seconds <= 0) {
+            countdownSeconds = 0
+            takePhoto(onPhotoSaved)
+            return
+        }
+        timerJob = timerScope.launch {
+            for (remaining in seconds downTo 1) {
+                countdownSeconds = remaining
+                delay(1000)
+            }
+            countdownSeconds = 0
+            takePhoto(onPhotoSaved)
+        }
+    }
+
     /**
      * Capture a photo using [ImageCapture] and save to [MediaStore].
      *
@@ -230,7 +331,17 @@ class CameraController(
                     val uri = output.savedUri
                     if (uri != null) {
                         Log.d(TAG, "Photo saved: $uri")
-                        onPhotoSaved(uri)
+                        val activeFilter = filterMode
+                        if (activeFilter == "original") {
+                            onPhotoSaved(uri)
+                        } else {
+                            cameraExecutor.execute {
+                                applyFilterToSavedImage(uri, activeFilter)
+                                ContextCompat.getMainExecutor(previewView.context).execute {
+                                    onPhotoSaved(uri)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -315,5 +426,25 @@ class CameraController(
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
             .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
             .build()
+    }
+
+    private fun applyFilterToSavedImage(uri: Uri, filter: String) {
+        val resolver = previewView.context.contentResolver
+        try {
+            val source = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) } ?: return
+            val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(output)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                colorFilter = ColorMatrixColorFilter(getColorMatrix(filter))
+            }
+            canvas.drawBitmap(source, 0f, 0f, paint)
+            resolver.openOutputStream(uri, "w")?.use { stream ->
+                output.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+            }
+            if (source !== output) source.recycle()
+            output.recycle()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply filter to saved photo", e)
+        }
     }
 }
