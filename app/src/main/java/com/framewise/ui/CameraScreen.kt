@@ -1,5 +1,6 @@
 package com.framewise.ui
 
+import android.graphics.Paint
 import android.net.Uri
 import android.view.ViewGroup
 import android.widget.Toast
@@ -36,8 +37,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -57,10 +61,13 @@ import com.framewise.engine.PhotoCompositionEngine
 import com.framewise.engine.rules.ALL_RULES
 import com.framewise.engine.types.Suggestion
 import com.framewise.engine.types.SuggestionType
+import com.framewise.engine.types.PhotoAnalysis
+import com.framewise.engine.types.Scene
 import com.framewise.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.min
 
 @Composable
 fun CameraScreen(
@@ -116,6 +123,7 @@ fun CameraScreen(
 
     val cameraState by cameraController.state.collectAsState()
     var gridVisible by remember { mutableStateOf(true) }
+    var showExampleOverlay by remember { mutableStateOf(false) }
 
     // Shutter flash: white overlay fades in then out over ~200ms on capture.
     val coroutineScope = rememberCoroutineScope()
@@ -172,6 +180,7 @@ fun CameraScreen(
             else -> ScoreBad
         }
     } ?: AccentBlue
+    val guidanceCues = remember(photoAnalysis) { buildGuidanceCues(photoAnalysis) }
 
     Box(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
         // 1. Full screen camera preview.
@@ -253,6 +262,14 @@ fun CameraScreen(
                     style = Stroke(width = 2.dp.toPx())
                 )
             }
+
+            if (showExampleOverlay) {
+                drawExampleOverlay(photoAnalysis?.scene ?: Scene.GENERIC, width, height)
+            }
+
+            guidanceCues.forEach { cue ->
+                drawGuidanceArrow(cue.direction, cue.x * width, cue.y * height, cue.text)
+            }
         }
 
         // C2. Status / empty-scene fallback message.
@@ -317,6 +334,31 @@ fun CameraScreen(
             )
         }
 
+        TextButton(
+            onClick = { showExampleOverlay = !showExampleOverlay },
+            modifier = Modifier
+                .statusBarsPadding()
+                .align(Alignment.TopStart)
+                .padding(start = 132.dp, top = 18.dp)
+                .height(44.dp)
+                .zIndex(2f)
+                .background(
+                    if (showExampleOverlay) AccentBlue.copy(alpha = 0.78f) else SurfaceDark.copy(alpha = 0.7f),
+                    RoundedCornerShape(22.dp)
+                )
+                .border(
+                    1.dp,
+                    if (showExampleOverlay) White.copy(alpha = 0.65f) else White.copy(alpha = 0.12f),
+                    RoundedCornerShape(22.dp)
+                )
+        ) {
+            Text(
+                text = "示例",
+                color = White,
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+
         // D2. Top-right camera toggle.
         IconButton(
             onClick = { cameraController.flipCamera() },
@@ -374,11 +416,13 @@ fun CameraScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 // Suggestion chips (real or demo fallback), bordered by score color.
-                val suggestions = compositionResult?.bestSuggestions?.takeIf { it.isNotEmpty() }
+                val suggestions = sceneSpecificSuggestions(photoAnalysis?.scene)
+                    .ifEmpty { compositionResult?.bestSuggestions.orEmpty() }
+                    .takeIf { it.isNotEmpty() }
                     ?: listOf(
-                        Suggestion(SuggestionType.INFO, "试试三分法"),
-                        Suggestion(SuggestionType.MOVE_CAMERA, "寻找引导线"),
-                        Suggestion(SuggestionType.CHANGE_ANGLE, "换个角度"),
+                        Suggestion(SuggestionType.INFO, "对准场景获取建议"),
+                        Suggestion(SuggestionType.MOVE_CAMERA, "将主体移到三分线交点"),
+                        Suggestion(SuggestionType.CHANGE_ANGLE, "换个角度寻找侧光"),
                     )
                 Row(
                     modifier = Modifier
@@ -662,6 +706,190 @@ private data class FilterOption(
     val label: String,
     val color: Color,
 )
+
+private data class GuidanceCue(
+    val direction: String,
+    val x: Float,
+    val y: Float,
+    val text: String,
+)
+
+private fun buildGuidanceCues(analysis: PhotoAnalysis?): List<GuidanceCue> {
+    if (analysis == null) return emptyList()
+    val cues = mutableListOf<GuidanceCue>()
+    val subject = analysis.subjects.maxByOrNull { it.confidence * it.bounds.width * it.bounds.height }
+    if (subject != null) {
+        val centerX = (subject.bounds.x + subject.bounds.width / 2.0).toFloat()
+        val centerY = (subject.bounds.y + subject.bounds.height / 2.0).toFloat()
+        when {
+            centerX < 0.42f -> cues += GuidanceCue("right", centerX, centerY, "→ 向右移动")
+            centerX > 0.58f -> cues += GuidanceCue("left", centerX, centerY, "← 向左移动")
+        }
+        when {
+            centerY < 0.30f -> cues += GuidanceCue("down", centerX, centerY, "↓ 向下压低")
+            centerY > 0.72f -> cues += GuidanceCue("up", centerX, centerY, "↑ 向上抬高")
+        }
+        val area = subject.bounds.width * subject.bounds.height
+        if (area < 0.08) {
+            cues += GuidanceCue("zoom_in", centerX.coerceIn(0.2f, 0.8f), (centerY + 0.12f).coerceIn(0.2f, 0.82f), "🔍 拉近镜头")
+        }
+    }
+
+    if (analysis.horizon.detected && abs(analysis.horizon.angle) > 1.2) {
+        val direction = if (analysis.horizon.angle > 0) "rotate_ccw" else "rotate_cw"
+        val arrow = if (analysis.horizon.angle > 0) "↺" else "↻"
+        val action = if (analysis.horizon.angle > 0) "向左旋转" else "向右旋转"
+        cues += GuidanceCue(
+            direction = direction,
+            x = 0.5f,
+            y = analysis.horizon.y.toFloat().coerceIn(0.18f, 0.72f),
+            text = "$arrow $action ${abs(analysis.horizon.angle).toInt().coerceAtLeast(1)}°",
+        )
+    }
+
+    return cues.take(3)
+}
+
+private fun sceneSpecificSuggestions(scene: Scene?): List<Suggestion> = when (scene) {
+    Scene.PORTRAIT -> listOf(
+        Suggestion(SuggestionType.RECOMPOSE, "将人物头部放在上三分线交点"),
+        Suggestion(SuggestionType.MOVE_CAMERA, "降低机位10cm，让下巴与下三分线对齐"),
+        Suggestion(SuggestionType.CHANGE_ANGLE, "向右转15°，让光线从左侧打过来"),
+    )
+    Scene.FOOD -> listOf(
+        Suggestion(SuggestionType.CHANGE_ANGLE, "将手机与桌面呈45°角俯拍"),
+        Suggestion(SuggestionType.RECOMPOSE, "把主体放在中央偏右位置"),
+        Suggestion(SuggestionType.ADJUST_EXPOSURE, "侧光拍摄，让阴影在左前方"),
+    )
+    Scene.LANDSCAPE -> listOf(
+        Suggestion(SuggestionType.RECOMPOSE, "将地平线对齐上三分线，突出前景"),
+        Suggestion(SuggestionType.MOVE_CAMERA, "向左移动3步，让道路成为引导线"),
+        Suggestion(SuggestionType.CHANGE_ANGLE, "降低机位到膝盖高度，增加前景层次"),
+    )
+    Scene.ARCHITECTURE -> listOf(
+        Suggestion(SuggestionType.RECOMPOSE, "站到建筑中轴线上，左右边缘保持对称"),
+        Suggestion(SuggestionType.ROTATE, "旋转手机，让竖线保持垂直"),
+        Suggestion(SuggestionType.MOVE_CAMERA, "后退半步，保留建筑顶部空间"),
+    )
+    else -> emptyList()
+}
+
+private fun DrawScope.drawGuidanceArrow(direction: String, subjectX: Float, subjectY: Float, label: String) {
+    val arrowColor = Color(0xFF44D17A)
+    val arrowStrokeWidth = 8f
+    val length = min(size.width, size.height) * 0.12f
+    val x = subjectX.coerceIn(64f, size.width - 64f)
+    val y = subjectY.coerceIn(96f, size.height - 220f)
+
+    when (direction) {
+        "left" -> {
+            drawLine(arrowColor, Offset(x + length / 2, y), Offset(x - length / 2, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(Offset(x - length / 2, y), "left", arrowColor)
+        }
+        "right" -> {
+            drawLine(arrowColor, Offset(x - length / 2, y), Offset(x + length / 2, y), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(Offset(x + length / 2, y), "right", arrowColor)
+        }
+        "up" -> {
+            drawLine(arrowColor, Offset(x, y + length / 2), Offset(x, y - length / 2), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(Offset(x, y - length / 2), "up", arrowColor)
+        }
+        "down" -> {
+            drawLine(arrowColor, Offset(x, y - length / 2), Offset(x, y + length / 2), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawArrowHead(Offset(x, y + length / 2), "down", arrowColor)
+        }
+        "rotate_cw", "rotate_ccw" -> {
+            val sweep = if (direction == "rotate_cw") 230f else -230f
+            drawArc(
+                color = arrowColor,
+                startAngle = if (direction == "rotate_cw") -140f else -40f,
+                sweepAngle = sweep,
+                useCenter = false,
+                topLeft = Offset(x - length / 2, y - length / 2),
+                size = Size(length, length),
+                style = Stroke(width = arrowStrokeWidth, cap = StrokeCap.Round),
+            )
+        }
+        "zoom_in" -> {
+            drawCircle(arrowColor, radius = length * 0.28f, center = Offset(x, y), style = Stroke(width = 7f))
+            drawLine(arrowColor, Offset(x + length * 0.18f, y + length * 0.18f), Offset(x + length * 0.48f, y + length * 0.48f), strokeWidth = arrowStrokeWidth, cap = StrokeCap.Round)
+            drawLine(arrowColor, Offset(x - length * 0.16f, y), Offset(x + length * 0.16f, y), strokeWidth = 5f, cap = StrokeCap.Round)
+            drawLine(arrowColor, Offset(x, y - length * 0.16f), Offset(x, y + length * 0.16f), strokeWidth = 5f, cap = StrokeCap.Round)
+        }
+    }
+    drawGuidanceLabel(label, x, y - length * 0.68f)
+}
+
+private fun DrawScope.drawArrowHead(tip: Offset, direction: String, color: Color) {
+    val size = 22f
+    val path = Path()
+    when (direction) {
+        "left" -> {
+            path.moveTo(tip.x, tip.y)
+            path.lineTo(tip.x + size, tip.y - size * 0.7f)
+            path.lineTo(tip.x + size, tip.y + size * 0.7f)
+        }
+        "right" -> {
+            path.moveTo(tip.x, tip.y)
+            path.lineTo(tip.x - size, tip.y - size * 0.7f)
+            path.lineTo(tip.x - size, tip.y + size * 0.7f)
+        }
+        "up" -> {
+            path.moveTo(tip.x, tip.y)
+            path.lineTo(tip.x - size * 0.7f, tip.y + size)
+            path.lineTo(tip.x + size * 0.7f, tip.y + size)
+        }
+        "down" -> {
+            path.moveTo(tip.x, tip.y)
+            path.lineTo(tip.x - size * 0.7f, tip.y - size)
+            path.lineTo(tip.x + size * 0.7f, tip.y - size)
+        }
+    }
+    path.close()
+    drawPath(path, color)
+}
+
+private fun DrawScope.drawGuidanceLabel(text: String, x: Float, y: Float) {
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textSize = 38f
+        textAlign = Paint.Align.CENTER
+    }
+    val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.argb(178, 20, 28, 24)
+    }
+    val width = paint.measureText(text) + 34f
+    val left = (x - width / 2).coerceIn(12f, size.width - width - 12f)
+    val top = y.coerceIn(80f, size.height - 280f)
+    drawContext.canvas.nativeCanvas.drawRoundRect(left, top, left + width, top + 52f, 26f, 26f, bgPaint)
+    drawContext.canvas.nativeCanvas.drawText(text, left + width / 2, top + 37f, paint)
+}
+
+private fun DrawScope.drawExampleOverlay(scene: Scene, width: Float, height: Float) {
+    val guide = Color(0xFF44D17A).copy(alpha = 0.36f)
+    val fill = Color.White.copy(alpha = 0.12f)
+    drawLine(guide, Offset(width / 3f, 0f), Offset(width / 3f, height), strokeWidth = 3f)
+    drawLine(guide, Offset(width * 2f / 3f, 0f), Offset(width * 2f / 3f, height), strokeWidth = 3f)
+    drawLine(guide, Offset(0f, height / 3f), Offset(width, height / 3f), strokeWidth = 3f)
+    drawLine(guide, Offset(0f, height * 2f / 3f), Offset(width, height * 2f / 3f), strokeWidth = 3f)
+    when (scene) {
+        Scene.PORTRAIT -> {
+            drawOval(fill, topLeft = Offset(width * 0.28f, height * 0.19f), size = Size(width * 0.18f, height * 0.22f))
+            drawRect(fill, topLeft = Offset(width * 0.24f, height * 0.42f), size = Size(width * 0.26f, height * 0.34f))
+        }
+        Scene.FOOD -> {
+            drawCircle(fill, radius = width * 0.16f, center = Offset(width * 0.58f, height * 0.50f))
+            drawLine(guide, Offset(width * 0.22f, height * 0.82f), Offset(width * 0.78f, height * 0.22f), strokeWidth = 5f)
+        }
+        Scene.LANDSCAPE -> {
+            drawLine(guide, Offset(0f, height / 3f), Offset(width, height / 3f), strokeWidth = 7f)
+            drawRect(fill, topLeft = Offset(width * 0.08f, height * 0.62f), size = Size(width * 0.84f, height * 0.18f))
+        }
+        else -> {
+            drawRect(fill, topLeft = Offset(width * 0.33f, height * 0.22f), size = Size(width * 0.34f, height * 0.56f))
+        }
+    }
+}
 
 @Composable
 private fun ZoomSlider(

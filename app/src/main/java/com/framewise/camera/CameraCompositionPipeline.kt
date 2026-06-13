@@ -211,7 +211,7 @@ class CameraCompositionPipeline(
         _photoAnalysis.value = demo
         val results = compositionEngine.evaluate(demo)
         val score = compositionEngine.getOverallScore(results) * 100.0
-        val suggestions = compositionEngine.getTopSuggestions(demo, count = 3)
+        val suggestions = demoSuggestions(scene, horizonAngle, subjects.first().bounds)
         _compositionResult.value = CompositionResult(
             overallScore = score,
             bestSuggestions = suggestions.ifEmpty {
@@ -224,6 +224,46 @@ class CameraCompositionPipeline(
         )
         Log.d(TAG, "Demo frame #$tick: scene=$scene, score=${"%.1f".format(score)}, " +
                 "horizon=${"%.1f".format(horizonAngle)}, backlit=$backlit, lines=${lines.size}")
+    }
+
+    private fun demoSuggestions(scene: Scene, horizonAngle: Double, primaryBounds: Rect): List<Suggestion> {
+        val moveDirection = when {
+            primaryBounds.x + primaryBounds.width / 2 < 0.42 -> "向右移动半步，把主体放到三分线交点"
+            primaryBounds.x + primaryBounds.width / 2 > 0.58 -> "向左移动半步，把主体放到三分线交点"
+            else -> "主体位置不错，微调到最近三分线交点"
+        }
+        val rotateDirection = if (horizonAngle > 0) {
+            "向左旋转 ${kotlin.math.abs(horizonAngle).toInt().coerceAtLeast(1)}° 校平画面"
+        } else {
+            "向右旋转 ${kotlin.math.abs(horizonAngle).toInt().coerceAtLeast(1)}° 校平画面"
+        }
+        return when (scene) {
+            Scene.PORTRAIT -> listOf(
+                Suggestion(SuggestionType.RECOMPOSE, "将人物头部放在上三分线交点"),
+                Suggestion(SuggestionType.MOVE_CAMERA, "降低机位10cm，让下巴与下三分线对齐"),
+                Suggestion(SuggestionType.CHANGE_ANGLE, "向右转15°，让光线从左侧打过来"),
+            )
+            Scene.FOOD -> listOf(
+                Suggestion(SuggestionType.CHANGE_ANGLE, "将手机与桌面呈45°角俯拍"),
+                Suggestion(SuggestionType.RECOMPOSE, "把主体放在中央偏右位置"),
+                Suggestion(SuggestionType.ADJUST_EXPOSURE, "侧光拍摄，让阴影在左前方"),
+            )
+            Scene.LANDSCAPE -> listOf(
+                Suggestion(SuggestionType.RECOMPOSE, "将地平线对齐上三分线，突出前景"),
+                Suggestion(SuggestionType.MOVE_CAMERA, "向左移动3步，让道路成为引导线"),
+                Suggestion(SuggestionType.CHANGE_ANGLE, "降低机位到膝盖高度，增加前景层次"),
+            )
+            Scene.ARCHITECTURE -> listOf(
+                Suggestion(SuggestionType.RECOMPOSE, "站到建筑中轴线上，左右边缘保持对称"),
+                Suggestion(SuggestionType.ROTATE, rotateDirection),
+                Suggestion(SuggestionType.MOVE_CAMERA, moveDirection),
+            )
+            else -> listOf(
+                Suggestion(SuggestionType.MOVE_CAMERA, moveDirection),
+                Suggestion(SuggestionType.ROTATE, rotateDirection),
+                Suggestion(SuggestionType.ADJUST_ZOOM, "拉近镜头，让主体占画面三分之一"),
+            )
+        }
     }
 
     // ── Internal ────────────────────────────────────────────────────────────
