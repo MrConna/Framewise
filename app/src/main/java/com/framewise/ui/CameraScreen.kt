@@ -3,6 +3,8 @@ package com.framewise.ui
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,14 +27,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.framewise.SettingsState
 import com.framewise.camera.CameraCompositionPipeline
 import com.framewise.camera.CameraController
 import com.framewise.camera.FrameAnalyzer
 import com.framewise.engine.PhotoCompositionEngine
 import com.framewise.engine.rules.ALL_RULES
+import com.framewise.engine.types.Suggestion
 import com.framewise.engine.types.SuggestionType
 import com.framewise.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 @Composable
@@ -74,6 +79,11 @@ fun CameraScreen(
     }
 
     val cameraState by cameraController.state.collectAsState()
+
+    // Fix 1: shutter flash. A white overlay fades in then out over ~200ms when a
+    // photo is captured.
+    val coroutineScope = rememberCoroutineScope()
+    val flashAlpha = remember { Animatable(0f) }
 
     // Lifecycle management runs ONCE per composition entry. We must NOT release
     // the analyzer on dispose — CameraX unbinds via the lifecycle automatically.
@@ -300,6 +310,20 @@ fun CameraScreen(
                 }
             }
 
+            // Fix 3: fallback demo suggestions when no analysis is available yet.
+            if (compositionResult == null || compositionResult?.bestSuggestions?.isEmpty() == true) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                ) {
+                    SuggestionChip(suggestion = Suggestion(SuggestionType.INFO, "Point camera at a scene"))
+                    SuggestionChip(suggestion = Suggestion(SuggestionType.MOVE_CAMERA, "Look for leading lines"))
+                    SuggestionChip(suggestion = Suggestion(SuggestionType.CHANGE_ANGLE, "Try different angle"))
+                }
+            }
+
             // Bottom control bar (Gallery icon, Shutter button)
             Box(
                 modifier = Modifier
@@ -327,7 +351,13 @@ fun CameraScreen(
                     onClick = {
                         if (cameraState.isReady) {
                             cameraController.takePhoto { uri ->
-                                // Photo captured successfully!
+                                val msg = if (uri != null) "Photo saved ✓" else "Failed to save photo"
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            }
+                            // Shutter flash: fade in then out over 200ms.
+                            coroutineScope.launch {
+                                flashAlpha.animateTo(1f, tween(100))
+                                flashAlpha.animateTo(0f, tween(100))
                             }
                         } else {
                             // Camera not initialized yet — nudge a rebind and tell the user.
@@ -348,6 +378,15 @@ fun CameraScreen(
                     )
                 }
             }
+        }
+
+        // Fix 1: shutter flash overlay (drawn above the controls).
+        if (flashAlpha.value > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = flashAlpha.value))
+            )
         }
 
         // Fix 3: recoverable camera-binding error banner (drawn last so it sits

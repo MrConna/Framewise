@@ -5,8 +5,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import com.framewise.SettingsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -15,13 +15,8 @@ import androidx.compose.ui.unit.dp
 fun SettingsScreen(
     onNavigateBack: () -> Unit
 ) {
-    // In a real app, these values would be backed by Preferences / DataStore.
-    // For MVP, we use mutableStateOf.
-    var ruleOfThirdsEnabled by rememberSaveable { mutableStateOf(true) }
-    var horizonLevelEnabled by rememberSaveable { mutableStateOf(true) }
-    var goldenRatioEnabled by rememberSaveable { mutableStateOf(false) }
-    var diagonalEnabled by rememberSaveable { mutableStateOf(false) }
-    var keepScreenOn by rememberSaveable { mutableStateOf(true) }
+    // Backed by the process-wide [SettingsState] so toggles survive navigation
+    // between Settings and Camera (rememberSaveable was scoped to this screen).
 
     Scaffold(
         topBar = {
@@ -60,29 +55,29 @@ fun SettingsScreen(
             SettingRow(
                 title = "Rule of Thirds",
                 description = "Show grid lines dividing the frame into nine equal parts",
-                checked = ruleOfThirdsEnabled,
-                onCheckedChange = { ruleOfThirdsEnabled = it }
+                checked = SettingsState.ruleOfThirdsEnabled,
+                onCheckedChange = { SettingsState.ruleOfThirdsEnabled = it }
             )
 
             SettingRow(
                 title = "Horizon Level",
                 description = "Show indicator to prevent image skewing",
-                checked = horizonLevelEnabled,
-                onCheckedChange = { horizonLevelEnabled = it }
+                checked = SettingsState.horizonLevelEnabled,
+                onCheckedChange = { SettingsState.horizonLevelEnabled = it }
             )
 
             SettingRow(
                 title = "Golden Ratio",
                 description = "Show golden ratio grid overlays",
-                checked = goldenRatioEnabled,
-                onCheckedChange = { goldenRatioEnabled = it }
+                checked = SettingsState.goldenRatioEnabled,
+                onCheckedChange = { SettingsState.goldenRatioEnabled = it }
             )
 
             SettingRow(
                 title = "Diagonal Lines",
                 description = "Show dynamic diagonal guidelines",
-                checked = diagonalEnabled,
-                onCheckedChange = { diagonalEnabled = it }
+                checked = SettingsState.diagonalEnabled,
+                onCheckedChange = { SettingsState.diagonalEnabled = it }
             )
 
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
@@ -96,8 +91,8 @@ fun SettingsScreen(
             SettingRow(
                 title = "Keep Screen On",
                 description = "Prevent device screen from turning off while using camera",
-                checked = keepScreenOn,
-                onCheckedChange = { keepScreenOn = it }
+                checked = SettingsState.keepScreenOn,
+                onCheckedChange = { SettingsState.keepScreenOn = it }
             )
 
             Spacer(modifier = Modifier.height(16.dp))
