@@ -28,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -73,6 +74,8 @@ fun CameraScreen(
     val retryLabel = stringResource(R.string.retry)
     val shutterHint = stringResource(R.string.shutter_hint)
     val scoreLabel = stringResource(R.string.score)
+    val galleryLabel = stringResource(R.string.gallery_title)
+    val settingsLabel = stringResource(R.string.settings_title)
 
     // Real composition pipeline: FrameAnalyzer → PhotoCompositionEngine (13 rules) → result.
     // Scope is passed for demo-mode timeout fallback.
@@ -261,7 +264,7 @@ fun CameraScreen(
         ) {
             Icon(
                 imageVector = Icons.Default.Settings,
-                contentDescription = "设置",
+                contentDescription = settingsLabel,
                 tint = White
             )
         }
@@ -337,7 +340,7 @@ fun CameraScreen(
                     }
                 }
 
-                // Control bar: recent-photo thumbnail / gallery + shutter.
+                // Control bar: recent-photo thumbnail / gallery + torch + shutter.
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -349,7 +352,7 @@ fun CameraScreen(
                     if (thumb != null) {
                         Image(
                             painter = rememberAsyncImagePainter(thumb),
-                            contentDescription = "相册",
+                            contentDescription = galleryLabel,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
@@ -368,10 +371,29 @@ fun CameraScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.PhotoLibrary,
-                                contentDescription = "相册",
+                                contentDescription = galleryLabel,
                                 tint = White
                             )
                         }
+                    }
+
+                    IconButton(
+                        onClick = { cameraController.toggleTorch() },
+                        enabled = cameraState.isReady,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(x = (-74).dp)
+                            .size(54.dp)
+                            .background(
+                                if (cameraState.isTorchOn) AccentBlue.copy(alpha = 0.85f) else SurfaceDark.copy(alpha = 0.7f),
+                                CircleShape,
+                            )
+                    ) {
+                        Text(
+                            text = if (cameraState.isTorchOn) "闪" else "灯",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = White
+                        )
                     }
 
                     // Center: shutter with a pulsing focus ring while initializing.
@@ -383,12 +405,10 @@ fun CameraScreen(
                             onClick = {
                                 if (cameraState.isReady) {
                                     cameraController.takePhoto { uri ->
-                                        val msg = if (uri != null) photoSavedMsg else "保存照片失败"
+                                        val msg = photoSavedMsg
                                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                        if (uri != null) {
-                                            SettingsState.capturedCount++
-                                            lastPhotoUri = uri
-                                        }
+                                        SettingsState.capturedCount++
+                                        lastPhotoUri = uri
                                     }
                                     coroutineScope.launch {
                                         flashAlpha.animateTo(1f, tween(100))
@@ -422,6 +442,16 @@ fun CameraScreen(
             }
         }
 
+        ZoomSlider(
+            zoomRatio = cameraState.zoomRatio,
+            maxZoom = cameraController.maxZoom,
+            enabled = cameraState.isReady,
+            onZoomChange = cameraController::setZoom,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 10.dp)
+        )
+
         // Shutter flash overlay (above the controls).
         if (flashAlpha.value > 0f) {
             Box(
@@ -454,6 +484,47 @@ fun CameraScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ZoomSlider(
+    zoomRatio: Float,
+    maxZoom: Float,
+    enabled: Boolean,
+    onZoomChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val upper = maxZoom.coerceAtLeast(1f)
+    if (upper <= 1.01f) return
+
+    Surface(
+        modifier = modifier
+            .height(210.dp)
+            .width(34.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = SurfaceDark.copy(alpha = 0.38f),
+        contentColor = White,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Slider(
+                value = zoomRatio.coerceIn(1f, upper),
+                onValueChange = onZoomChange,
+                valueRange = 1f..upper,
+                enabled = enabled,
+                modifier = Modifier
+                    .width(190.dp)
+                    .rotate(-90f),
+                colors = SliderDefaults.colors(
+                    thumbColor = White.copy(alpha = 0.92f),
+                    activeTrackColor = AccentBlue.copy(alpha = 0.85f),
+                    inactiveTrackColor = White.copy(alpha = 0.22f),
+                    disabledThumbColor = White.copy(alpha = 0.35f),
+                    disabledActiveTrackColor = White.copy(alpha = 0.25f),
+                    disabledInactiveTrackColor = White.copy(alpha = 0.12f),
+                )
+            )
         }
     }
 }

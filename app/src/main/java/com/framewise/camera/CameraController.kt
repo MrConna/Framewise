@@ -16,6 +16,9 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -35,6 +38,8 @@ data class CameraState(
     val isReady: Boolean = false,
     val rotationDegrees: Int = 0,
     val isFrontCamera: Boolean = false,
+    val zoomRatio: Float = 1f,
+    val isTorchOn: Boolean = false,
     val error: String? = null,
     /** Set when CameraX binding fails, so the UI can show a recoverable banner. */
     val errorMessage: String? = null,
@@ -81,6 +86,15 @@ class CameraController(
     private var imageCapture: ImageCapture? = null
     private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
+    var zoomRatio by mutableStateOf(1f)
+        private set
+
+    var maxZoom by mutableStateOf(1f)
+        private set
+
+    var isTorchOn by mutableStateOf(false)
+        private set
+
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
     /** Start the camera preview and image analysis. */
@@ -105,6 +119,9 @@ class CameraController(
         cameraProvider?.unbindAll()
         camera = null
         imageCapture = null
+        zoomRatio = 1f
+        maxZoom = 1f
+        isTorchOn = false
         _state.value = CameraState()
     }
 
@@ -154,11 +171,28 @@ class CameraController(
     /** Switch between front and back camera. Retains [state.isFrontCamera]. */
     fun flipCamera() {
         val current = _state.value.isFrontCamera
-        _state.value = _state.value.copy(isFrontCamera = !current)
+        isTorchOn = false
+        _state.value = _state.value.copy(isFrontCamera = !current, isTorchOn = false)
         cameraProvider?.let { provider ->
             provider.unbindAll()
             bindUseCases(provider)
         }
+    }
+
+    fun setZoom(ratio: Float) {
+        val clamped = ratio.coerceIn(1f, maxZoom.coerceAtLeast(1f))
+        zoomRatio = clamped
+        _state.value = _state.value.copy(zoomRatio = clamped)
+        camera?.cameraControl?.setZoomRatio(clamped)
+    }
+
+    fun toggleTorch() {
+        val boundCamera = camera ?: return
+        if (!boundCamera.cameraInfo.hasFlashUnit()) return
+        val next = !isTorchOn
+        boundCamera.cameraControl.enableTorch(next)
+        isTorchOn = next
+        _state.value = _state.value.copy(isTorchOn = next)
     }
 
     /**
@@ -171,7 +205,7 @@ class CameraController(
                 "cameraReady=${_state.value.isReady}")
         val capture = imageCapture ?: run {
             Log.e(TAG, "Cannot take photo: imageCapture is null — camera not bound yet")
-            _state.value = _state.value.copy(error = "Camera not ready — try again in a moment")
+            _state.value = _state.value.copy(error = "相机未就绪，请稍后重试")
             return
         }
 
@@ -250,12 +284,19 @@ class CameraController(
             )
 
             // Read sensor rotation (orientation degrees for EXIF).
-            val rotation = camera?.cameraInfo?.sensorRotationDegrees ?: 0
+            val boundCamera = camera
+            val rotation = boundCamera?.cameraInfo?.sensorRotationDegrees ?: 0
+            val zoomState = boundCamera?.cameraInfo?.zoomState?.value
+            maxZoom = zoomState?.maxZoomRatio ?: 1f
+            zoomRatio = (zoomState?.zoomRatio ?: zoomRatio).coerceIn(1f, maxZoom.coerceAtLeast(1f))
+            isTorchOn = false
 
             _state.value = CameraState(
                 isReady = true,
                 rotationDegrees = rotation,
                 isFrontCamera = isFront,
+                zoomRatio = zoomRatio,
+                isTorchOn = isTorchOn,
             )
             Log.d(TAG, "Camera bound, rotation=$rotation, facing=${if (isFront) "front" else "back"}")
         } catch (e: Exception) {
@@ -263,7 +304,7 @@ class CameraController(
             _state.value = _state.value.copy(
                 isReady = false,
                 error = e.message,
-                errorMessage = e.message ?: "Unknown camera error",
+                errorMessage = e.message ?: "未知相机错误",
             )
         }
     }
